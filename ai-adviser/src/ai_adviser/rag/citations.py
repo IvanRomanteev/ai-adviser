@@ -1,0 +1,224 @@
+"""
+Functions for extracting and validating citations in generated answers.
+
+The assistant must cite its sources inline using the notation [S1], [S2], …
+where the integer corresponds to the order in which snippets were included
+in the context. This module provides helpers to find citations in a string
+and verify that they refer to actual context sources.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Dict, Iterable, List, Optional, Tuple, Sequence, Set
+
+
+_CITATION_PATTERN = re.compile(r"\[S(\d+)\]")
+
+# Returned by /rag_chat when nothing relevant was retrieved OR citations fail validation upstream.
+FALLBACK_MESSAGE = "Not found in the knowledge base."
+
+# Allow section headers without requiring citations on that line.
+# Supports markdown headings (e.g. "## Summary") and plain text (e.g. "Summary:").
+
+# Parse a single Sources mapping line; allow bullets or numbered lists:
+#   [S1] https://...
+#   - [S1] https://...
+#   1. [S1] https://...
+_SOURCE_MAP_LINE_RE = re.compile(
+    r"^(?:(?:[-*]|\d+\.)\s*)?\[S(\d+)\]\s+.+",
+    re.IGNORECASE,
+)
+
+# Recognize common "Sources" section headers in markdown/plain text.
+# Examples:
+#   Sources
+#   Sources:
+#   **Sources**
+#   ## Sources
+_SOURCES_HEADER_PATTERN = re.compile(
+    r"^\s*(?:\*\*|#+\s*)?sources(?:\*\*)?\s*:??\s*$",
+    flags=re.IGNORECASE,
+)
+
+# Parse a single mapping line used by upsert_sources_section().
+# (Kept for compatibility with the existing upsert logic.)
+_SOURCE_LINE_PATTERN = re.compile(r"^\s*\[S(\d+)\]\s+(\S+)(?:\s+.*)?$", flags=re.IGNORECASE)
+
+
+def extract_citation_indices(answer: str) -> List[int]:
+    """Extract citation numbers from an answer string."""
+    return [int(x) for x in _CITATION_PATTERN.findall(answer or "")]
+
+
+def _canonical_blob_url_for_source(source: Dict[str, object]) -> str:
+    """Best-effort extract the blob URL for a retrieved source."""
+    blob = source.get("blob_url")
+    if isinstance(blob, str) and blob.strip():
+        return blob.strip()
+    raw = source.get("raw")
+    if isinstance(raw, dict):
+        raw_blob = raw.get("blob_url") or raw.get("source_file")
+        if isinstance(raw_blob, str) and raw_blob.strip():
+            return raw_blob.strip()
+    return ""
+
+
+def build_sources_mapping(
+    sources: Iterable[Dict[str, object]],
+    *,
+    used_indices: Optional[Iterable[int]] = None,
+) -> Tuple[List[int], str]:
+    """Build a canonical sources mapping text (lines like: "[S1] https://...")."""
+    src_list = list(sources)
+    if used_indices is None:
+        indices = list(range(1, len(src_list) + 1))
+    else:
+        indices = sorted({int(i) for i in used_indices if int(i) > 0})
+        indices = [i for i in indices if i <= len(src_list)]
+
+    lines: List[str] = []
+    for idx in indices:
+        blob = _canonical_blob_url_for_source(src_list[idx - 1])
+        if not blob:
+            blob = "<missing_blob_url>"
+        lines.append(f"[S{idx}] {blob}")
+    return indices, "\n".join(lines)
+
+
+def upsert_sources_section(
+    answer: str,
+    sources: Iterable[Dict[str, object]],
+    *,
+    prefer_bold_heading: bool = True,
+) -> str:
+    """Ensure the answer has a Sources section with correct blob URLs.
+
+    Only fixes the final Sources mapping. Does not add missing inline citations.
+    """
+    answer = answer or ""
+    used = sorted(set(extract_citation_indices(answer)))
+    _, mapping = build_sources_mapping(sources, used_indices=used or None)
+
+    heading = "**Sources**" if prefer_bold_heading else "Sources"
+    block = f"{heading}\n{mapping}" if mapping else heading
+
+    lines = answer.splitlines()
+    header_idx: Optional[int] = None
+    for i, raw_line in enumerate(lines):
+        if _SOURCES_HEADER_PATTERN.match(raw_line.strip()):
+            header_idx = i
+            break
+
+    if header_idx is None:
+        return answer.rstrip() + "\n\n" + block + "\n"
+
+    prefix = "\n".join(lines[:header_idx]).rstrip()
+    return prefix + "\n\n" + block + "\n"
+
+def _split_body_and_sources(answer: str) -> tuple[list[str], list[str]]:
+    """Split answer into body lines and sources-section lines."""
+    lines = (answer or "").splitlines()
+    for i, line in enumerate(lines):
+        if _SOURCES_HEADER_PATTERN.match(line.strip()):
+            return lines[:i], lines[i:]
+    return lines, []
+
+def _validate_baseline_citations(answer: str, sources: Sequence[Dict[str, object]]) -> bool:
+    # ВАЖНО: учитываем только body, иначе "Sources-only" обманет baseline.
+    body_lines, _ = _split_body_and_sources(answer)
+    citation_nums = extract_citation_indices("\n".join(body_lines))
+    if not citation_nums:
+        return False
+    max_ref = max(citation_nums)
+    if max_ref > len(sources):
+        return False
+    if any(n <= 0 for n in citation_nums):
+        return False
+    return True
+
+# Allow section headers without requiring citations on that line.
+# Supports markdown headings (e.g. "## Summary") and plain text (e.g. "Summary:").
+_SECTION_HEADER_RE = re.compile(
+    r"^(#{1,6}\s*)?"
+    r"(summary"
+    r"|key points(?:\s*(?:/|or)\s*risks)?"
+    r"|steps(?:\s*(?:/|or)\s*best practices)?"
+    r"|exceptions(?:\s*(?:/|or)\s*limitations)?"
+    r"|sources)"
+    r"\s*[:\-–—]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _validate_structure(answer: str, sources: Sequence[Dict[str, object]]) -> bool:
+    lines = (answer or "").splitlines()
+    in_sources = False
+    saw_sources_header = False
+    saw_any_mapping = False
+    saw_body_content_line = False
+
+    cited_in_body: Set[int] = set()
+    mapped_indices: Set[int] = set()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # headers are exempt from citations
+        if _SECTION_HEADER_RE.match(stripped):
+            if re.match(r"^(#{1,6}\s*)?sources\b", stripped, flags=re.IGNORECASE):
+                saw_sources_header = True
+                in_sources = True
+            continue
+
+        if in_sources:
+            m = _SOURCE_MAP_LINE_RE.match(stripped)
+            if not m:
+                return False
+            idx = int(m.group(1))
+            mapped_indices.add(idx)
+            saw_any_mapping = True
+            continue
+
+        # body content line (not header)
+        saw_body_content_line = True
+        if not _CITATION_PATTERN.search(stripped):
+            return False
+        cited_in_body.update(extract_citation_indices(stripped))
+
+    # NEW: block "Sources-only" / "headers-only"
+    if not saw_body_content_line:
+        return False
+    if not saw_sources_header or not saw_any_mapping:
+        return False
+
+    if cited_in_body and not cited_in_body.issubset(mapped_indices):
+        return False
+    if cited_in_body and max(cited_in_body) > len(sources):
+        return False
+
+    return True
+
+
+
+def validate_answer_citations(answer: str, sources: Iterable[Dict[str, object]]) -> bool:
+    # Allow explicit fallback answer through without citations.
+    if (answer or "").strip() == FALLBACK_MESSAGE:
+        return True
+
+    if not _validate_baseline_citations(answer, sources):
+        return False
+
+    try:
+        from ai_adviser.config import settings  # late import to avoid cycles
+
+        enforce = settings.CITATION_ENFORCE_STRUCTURE
+    except Exception:
+        enforce = False
+
+    if not enforce:
+        return True
+
+    return _validate_structure(answer, sources)

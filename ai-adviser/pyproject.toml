@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-adviser"
+version = "0.1.0"
+description = "RAG banking assistant with Azure AI Search, oss120b and LangGraph"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+authors = [
+  { name = "Ivan Romanteev", email = "vanya889605@gmail.com" },
+]
+dependencies = [
+  "python-dotenv==1.0.1",
+
+  "openai==1.109.1",
+  "jiter==0.9.1",
+
+  "azure-search-documents==11.6.0",
+  "azure-core==1.30.2",
+  "azure-storage-blob==12.16.0",
+
+  "httpx==0.26.0",
+  "httpcore==1.0.7",
+  "h11==0.14.0",
+  "anyio==4.2.0",
+  "sniffio==1.3.1",
+
+  "fastapi==0.110.0",
+  "starlette==0.36.3",
+  "uvicorn==0.29.0",
+
+  "sqlalchemy==2.0.27",
+  "psycopg2-binary==2.9.9",
+
+  "pydantic>=2.6.0,<3.0.0",
+  "pydantic-settings>=2.2.0,<3.0.0",
+  "fastapi>=0.110.0,<1.0.0",
+  "azure-ai-inference==1.0.0b9",
+
+
+  "tenacity==8.2.3",
+  "orjson==3.9.15",
+
+  "pytest==8.0.2",
+
+  # Observability and monitoring dependencies
+  # Prometheus client is used to expose application metrics via the /metrics endpoint.
+  "prometheus-client>=0.15.0,<1.0.0",
+  # OpenTelemetry packages are used for distributed tracing.  The API and SDK
+  # define the tracing primitives while the instrumentation package wires up
+  # FastAPI automatically.  The OTLP exporter sends trace data to a collector
+  # configured via the OTLP_ENDPOINT environment variable.  Versions are kept
+  # consistent to avoid compatibility issues.
+  "opentelemetry-api==1.22.0",
+  "opentelemetry-sdk==1.22.0",
+  "opentelemetry-exporter-otlp==1.22.0",
+  "opentelemetry-semantic-conventions==0.43b0",
+]
+
+# --- setuptools: src-layout package discovery ---
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ai_adviser*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
