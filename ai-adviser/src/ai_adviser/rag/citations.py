@@ -1,10 +1,14 @@
-"""
-Functions for extracting and validating citations in generated answers.
+"""Functions for extracting and validating citations in generated answers.
 
-The assistant must cite its sources inline using the notation [S1], [S2], …
-where the integer corresponds to the order in which snippets were included
-in the context. This module provides helpers to find citations in a string
-and verify that they refer to actual context sources.
+The assistant must cite its sources inline using the notation [S1],
+[S2], … where the integer corresponds to the order in which snippets were
+included in the context. This module provides helpers to find citations
+in a string and verify that they refer to actual context sources.
+
+This implementation is adapted from the original ai_adviser project
+with fixes to ensure that citations are only considered valid when
+inline references appear in the body of the answer (not within the
+Sources section) and that structural enforcement behaves deterministically.
 """
 
 from __future__ import annotations
@@ -18,9 +22,6 @@ _CITATION_PATTERN = re.compile(r"\[S(\d+)\]")
 # Returned by /rag_chat when nothing relevant was retrieved OR citations fail validation upstream.
 FALLBACK_MESSAGE = "Not found in the knowledge base."
 
-# Allow section headers without requiring citations on that line.
-# Supports markdown headings (e.g. "## Summary") and plain text (e.g. "Summary:").
-
 # Parse a single Sources mapping line; allow bullets or numbered lists:
 #   [S1] https://...
 #   - [S1] https://...
@@ -30,7 +31,7 @@ _SOURCE_MAP_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Recognize common "Sources" section headers in markdown/plain text.
+# Recognise common "Sources" section headers in markdown/plain text.
 # Examples:
 #   Sources
 #   Sources:
@@ -116,6 +117,7 @@ def upsert_sources_section(
     prefix = "\n".join(lines[:header_idx]).rstrip()
     return prefix + "\n\n" + block + "\n"
 
+
 def _split_body_and_sources(answer: str) -> tuple[list[str], list[str]]:
     """Split answer into body lines and sources-section lines."""
     lines = (answer or "").splitlines()
@@ -123,6 +125,7 @@ def _split_body_and_sources(answer: str) -> tuple[list[str], list[str]]:
         if _SOURCES_HEADER_PATTERN.match(line.strip()):
             return lines[:i], lines[i:]
     return lines, []
+
 
 def _validate_baseline_citations(answer: str, sources: Sequence[Dict[str, object]]) -> bool:
     # ВАЖНО: учитываем только body, иначе "Sources-only" обманет baseline.
@@ -164,16 +167,28 @@ def _validate_structure(answer: str, sources: Sequence[Dict[str, object]]) -> bo
     for line in lines:
         stripped = line.strip()
         if not stripped:
+            # Skip blank lines
             continue
 
-        # headers are exempt from citations
+        # Detect the beginning of a Sources section.  Accept variations such as
+        # "Sources", "Sources:", "**Sources**" and "## Sources".  When this
+        # matches we switch into the sources-parsing mode and require that
+        # subsequent non-empty lines map citations to blob URLs.
+        if _SOURCES_HEADER_PATTERN.match(stripped):
+            saw_sources_header = True
+            in_sources = True
+            continue
+
+        # Other top-level section headers (e.g. "Summary", "Key points") are
+        # exempt from citation requirements.  If we encounter one of these we
+        # simply skip over it.  The "Sources" header is handled above.
         if _SECTION_HEADER_RE.match(stripped):
-            if re.match(r"^(#{1,6}\s*)?sources\b", stripped, flags=re.IGNORECASE):
-                saw_sources_header = True
-                in_sources = True
             continue
 
         if in_sources:
+            # Lines within the sources section must conform to the mapping
+            # pattern.  Allow bullets or numbered lists.  If any line fails
+            # to match we treat the entire answer as invalid.
             m = _SOURCE_MAP_LINE_RE.match(stripped)
             if not m:
                 return False
@@ -182,20 +197,24 @@ def _validate_structure(answer: str, sources: Sequence[Dict[str, object]]) -> bo
             saw_any_mapping = True
             continue
 
-        # body content line (not header)
+        # For all other non-empty lines (body content) require at least one
+        # inline citation.  Collect all referenced citation numbers.
         saw_body_content_line = True
         if not _CITATION_PATTERN.search(stripped):
             return False
         cited_in_body.update(extract_citation_indices(stripped))
 
-    # NEW: block "Sources-only" / "headers-only"
+    # Reject answers that contain no substantive body content (e.g. only headers
+    # or only a Sources section).
     if not saw_body_content_line:
         return False
+    # Require that a Sources header and at least one mapping line exist.
     if not saw_sources_header or not saw_any_mapping:
         return False
-
+    # All citations used in the body must also appear in the sources mapping.
     if cited_in_body and not cited_in_body.issubset(mapped_indices):
         return False
+    # Ensure no body citation refers to a non-existent source.
     if cited_in_body and max(cited_in_body) > len(sources):
         return False
 
@@ -203,7 +222,28 @@ def _validate_structure(answer: str, sources: Sequence[Dict[str, object]]) -> bo
 
 
 
-def validate_answer_citations(answer: str, sources: Iterable[Dict[str, object]]) -> bool:
+def validate_answer_citations(
+    answer: str,
+    sources: Iterable[Dict[str, object]],
+    *,
+    enforce_structure: Optional[bool] = None,
+) -> bool:
+    """Validate that an answer contains proper inline citations and, if requested,
+    a well‑formed Sources section.
+
+    Parameters:
+        answer: The generated answer string.
+        sources: A sequence of source metadata dictionaries.
+        enforce_structure: If True, require that the answer contain a
+            Sources section with correctly formatted mapping lines.  If
+            False, only baseline citation checks are performed.  If
+            None (the default), the global settings.CITATION_ENFORCE_STRUCTURE
+            flag determines whether the structure is enforced.
+
+    Returns:
+        True if the answer satisfies the baseline citation rules (and
+        optionally the structural rules); False otherwise.
+    """
     # Allow explicit fallback answer through without citations.
     if (answer or "").strip() == FALLBACK_MESSAGE:
         return True
@@ -213,12 +253,13 @@ def validate_answer_citations(answer: str, sources: Iterable[Dict[str, object]])
 
     try:
         from ai_adviser.config import settings  # late import to avoid cycles
-
-        enforce = settings.CITATION_ENFORCE_STRUCTURE
+        default_enforce = settings.CITATION_ENFORCE_STRUCTURE
     except Exception:
-        enforce = False
+        default_enforce = False
 
+    # Determine whether to enforce structural rules.  If enforce_structure
+    # is None use the settings flag; otherwise use the explicit value.
+    enforce = default_enforce if enforce_structure is None else enforce_structure
     if not enforce:
         return True
-
-    return _validate_structure(answer, sources)
+    return _validate_structure(answer, list(sources))
