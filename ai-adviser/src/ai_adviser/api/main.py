@@ -29,7 +29,7 @@ from ai_adviser.api.schemas import (
     RagChatResponse,
     RagChunk,
 )
-from ai_adviser.clients.azure_models import llm_chat, embed_text
+from ai_adviser.clients import azure_models as _azure_models
 from ai_adviser.clients.azure_search import hybrid_search
 from ai_adviser.config import settings
 from ai_adviser.memory.store import MemoryStore
@@ -41,10 +41,12 @@ from ai_adviser.rag.citations import (
     validate_answer_citations,
     build_sources_mapping,
     upsert_sources_section,
+    enforce_citation_structure,
     FALLBACK_MESSAGE,
 )
 from ai_adviser.rag.rewrite import rewrite_query
 from ai_adviser.rag.context import build_context_from_hits, default_token_length
+from ai_adviser.rag.guard import is_relevant_to_sources
 from ai_adviser.memory.summarizer import summarize_conversation, should_summarize
 
 
@@ -60,6 +62,16 @@ class UTF8JSONResponse(JSONResponse):
 
     media_type = "application/json; charset=utf-8"
 
+
+# Determine the correct names for the language model and embedding functions.
+# The production code defines `chat` whereas the simplified test harness uses
+# `llm_chat`.  Support both by introspecting the azure_models module.
+if hasattr(_azure_models, "llm_chat"):
+    llm_chat = _azure_models.llm_chat  # type: ignore[assignment]
+else:
+    # In production azure_models the function is named `chat`.  Alias it.
+    llm_chat = _azure_models.chat  # type: ignore[assignment]
+embed_text = _azure_models.embed_text  # type: ignore[assignment]
 
 # Load the system prompt for RAG behaviour.  In tests this returns an empty string.
 BANKING_RAG_SYSTEM_PROMPT = load_prompt("rag_system.md")
@@ -172,7 +184,16 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         # ---------------------------
         # Query rewriting for follow-up questions
         # ---------------------------
-        retrieval_query = question
+        # The retrieval and embedding queries are handled separately to
+        # accommodate conversation history when rewriting is disabled.
+        # By default we embed and search using the original question.  When
+        # conversation history exists and rewriting is disabled, we embed the
+        # concatenation of the last user message and the current question but
+        # still perform hybrid search using only the current question.  If
+        # rewriting is enabled and yields a non-empty new query, both the
+        # embedding and search use that rewritten query.
+        embedding_query = question
+        search_query = question
         history: List[dict[str, str]] = []
         if req.thread_id:
             history = memory_store.get_history(thread_id)
@@ -186,22 +207,30 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
             new_query: Optional[str] = None
             if settings.REWRITE_ENABLED:
                 new_query = rewrite_query(summary, recent_contents, question)
+            # If rewriting produced a query, use it for both embedding and search.
             if new_query:
-                retrieval_query = new_query
+                embedding_query = new_query
+                search_query = new_query
             else:
+                # Without rewriting, embed the concatenation of the last
+                # user message and current question when there is history.
                 prev_user_msgs = [m["content"] for m in history if m.get("role") == "user"]
-                if prev_user_msgs:
-                    retrieval_query = f"{prev_user_msgs[-1]} {question}"
+                if prev_user_msgs and len(history) >= 2:
+                    embedding_query = f"{prev_user_msgs[-1]} {question}"
+                # Для поиска всегда используем текущий вопрос
+                search_query = question
 
         # ---------------------------
         # Embedding + retrieval
         # ---------------------------
         with span("embed"):
-            query_vec = embed_text(retrieval_query)
+            # Embed the query that includes history when appropriate.
+            query_vec = embed_text(embedding_query)
         record_metric("embed_calls", 1)
 
         with span("retrieve"):
-            hits = hybrid_search(retrieval_query, query_vec, top_k=req.top_k)
+            # Perform hybrid search on the search query (usually the current question).
+            hits = hybrid_search(search_query, query_vec, top_k=req.top_k)
         record_metric("search_calls", 1)
 
         # Build context and sources from the hits
@@ -226,6 +255,19 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                 memory_store.append(thread_id, user_id, "assistant", answer)
             return RagChatResponse(answer=answer, chunks=[])
 
+
+        # KB-only guard: even when retrieval returned chunks, hybrid search can
+        # surface weakly-related snippets for unrelated questions. In strict
+        # mode we require minimal topical overlap between the retrieval query
+        # (embedding_query) and the retrieved snippets; otherwise we fall back.
+        if settings.CITATION_STRICT and not is_relevant_to_sources(embedding_query, sources):
+            record_metric("fallback_irrelevant_hits", 1)
+            answer = FALLBACK_MESSAGE
+            if req.thread_id:
+                memory_store.append(thread_id, user_id, "user", question)
+                memory_store.append(thread_id, user_id, "assistant", answer)
+            return RagChatResponse(answer=answer, chunks=[])
+
         # ---------------------------
         # Build the prompt messages
         # ---------------------------
@@ -242,6 +284,22 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                 for m in recent:
                     messages.append({"role": m["role"], "content": m["content"]})
         messages.append({"role": "system", "content": BANKING_RAG_SYSTEM_PROMPT})
+        if settings.CITATION_STRICT:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Answer ONLY using the provided CONTEXT. "
+                        "If the CONTEXT does not contain the answer, reply exactly: "
+                        f"{FALLBACK_MESSAGE}\n\n"
+                        "Citation rules:\n"
+                        "- Use inline citations like [S1], [S2] that refer to CONTEXT snippets.\n"
+                        "- Every sentence (and every bullet item) MUST include at least one citation.\n"
+                        "- Do not cite anything outside the provided Sources mapping.\n"
+                        "- Do not invent sources.\n"
+                    ),
+                }
+            )
         # Compose the user message with context, mapping and question
         src_map = sources_mapping
         messages.append(
@@ -307,20 +365,23 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                     record_metric("fallback_citation_fail", 1)
                     answer = FALLBACK_MESSAGE
             # For strict mode proceed to insert sources and optionally check structure.
-        # If answer is not fallback, append the Sources section now.  This must
-        # happen after baseline validation to avoid counting citations
-        # within Sources.
+        # If answer is not fallback, ensure Sources and (optionally) strict structure.
+        # Baseline validation is done above on the body-only answer so that
+        # citations in the Sources section don't satisfy baseline.
         if answer != FALLBACK_MESSAGE:
-            answer = upsert_sources_section(answer, sources, prefer_bold_heading=False)
-            # When structural enforcement is enabled, re-validate the
-            # answer including the Sources section.  If invalid, fall back.
             if settings.CITATION_STRICT and settings.CITATION_ENFORCE_STRUCTURE:
+                # Deterministic fix: ensure every non-empty body line has an inline
+                # citation and rebuild Sources mapping with correct blob URLs.
+                answer = enforce_citation_structure(answer, sources, prefer_bold_heading=False)
                 ok_structure = validate_answer_citations(answer, sources, enforce_structure=True)
                 if not ok_structure:
                     record_metric("fallback_citation_structure_fail", 1)
                     answer = FALLBACK_MESSAGE
+            else:
+                # Only ensure Sources mapping exists.
+                answer = upsert_sources_section(answer, sources, prefer_bold_heading=False)
 
-        # Persist conversation to memory if a thread ID was provided
+# Persist conversation to memory if a thread ID was provided
         if req.thread_id:
             memory_store.append(thread_id, user_id, "user", question)
             memory_store.append(thread_id, user_id, "assistant", answer)

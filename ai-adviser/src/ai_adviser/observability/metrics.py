@@ -110,6 +110,8 @@ class MetricsCollector:
             ("error_count", "Number of exceptions raised during request handling"),
             ("fallback_no_hits", "Number of times the RAG pipeline returned no hits"),
             ("fallback_citation_fail", "Number of times fallback occurred due to citation validation failure"),
+            ("fallback_citation_structure_fail", "Number of times fallback occurred due to citation structure validation failure"),
+            ("fallback_irrelevant_hits", "Number of times fallback occurred because retrieved hits were irrelevant"),
             ("retry_count", "Number of retry attempts across external calls"),
         ]:
             self.counters[name] = Counter(
