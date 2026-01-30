@@ -1,0 +1,91 @@
+{
+    "Version": "1.0",
+    "Name": "get_user_basic_profile",
+    "Descr": "Get a user basic profile/info.  Function requires no parameters.",
+    "Params": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+    },
+    "Output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Function output schema for the get_user_basic_profile.",
+        "description": "Schema for interpreting output of the get_user_basic_profile function.",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "modified_time": {
+                "type": "string",
+                "description": "Document modification time. Timezone is always UTC. Format: YYYY-MM-DDTHH:MM:SS. (example: 2025-09-27T19:50:51)"
+            },
+            "user_id": {
+                "type": "string",
+                "description": "User unique ID. (e.g. ABC_000DEF111, 0001-111-2222-3333)"
+            },
+            "user_name": {
+                "type": "string",
+                "description": "User name or user ID."
+            },
+            "age_years": {
+                "type": "number",
+                "description": "User age, years."
+            },
+            "primary_residence": {
+                "type": "string",
+                "description": "User's primary residence location. Default country is USA. Can be state+county, city, zip code. (e.g. 'NC,Mecklenburg', 'Charlotte', 'LOS ANGELES CA 90001', 'ZIP Code 28105')"
+            },
+            "military_status": {
+                "enum": [
+                    "veteran",
+                    "active_duty",
+                    "reserve",
+                    "retired_military",
+                    "none"
+                ],
+                "description": "User's military (National Guard included) affiliation. None means civilian."
+            },
+            "pension_or_retired": {
+                "type": "boolean",
+                "description": "True if the user is retired and/or receiving a pension (civilian or military)."
+            },
+            "nfcc_dmp": {
+                "type": "boolean",
+                "description": "True if the user is currently enrolled in an NFCC debt management program."
+            },
+            "annual_income": {
+                "type": "number",
+                "description": "Self-reported annual gross personal income (not household); not verified. Amount in USD."
+            },
+            "employment": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Employment information.",
+                "properties": {
+                    "type": {
+                        "enum": [
+                            "full_time",
+                            "part_time",
+                            "seasonal",
+                            "student",
+                            "self_employed",
+                            "unemployed"
+                        ],
+                        "description": "Primary status for the userвЂ™s current work situation."
+                    },
+                    "employer": {
+                        "type": "string",
+                        "description": "Optional. Employer name if employed. Empty/skipped/null value means unspecified."
+                    },
+                    "multi_job": {
+                        "type": "boolean",
+                        "description": "True only if the user has multiple jobs, otherwise false."
+                    }
+                }
+            },
+            "government_benefits": {
+                "type": "boolean",
+                "description": "Do you receive any government benefits? User answer (checkbox). Not verified."
+            }
+        }
+    }
+}

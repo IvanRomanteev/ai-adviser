@@ -1,0 +1,16 @@
+{
+  "modified_time": "2025-10-28T01:00:00",
+  "user_id": "00000000-C0DE-1E51-0000-0000000005E7",
+  "user_name": "John Tester",
+  "age_years": 40,
+  "primary_residence": "ZIP Code 28105",
+  "military_status": "none",
+  "pension_or_retired": false,
+  "nfcc_dmp": false,
+  "annual_income": 50000,
+  "employment": {
+    "type": "self_employed",
+    "multi_job": false
+  },
+  "government_benefits": false
+}
