@@ -135,3 +135,4 @@ def chat(
         )
 
     return (resp.choices[0].message.content or "").strip()
+
