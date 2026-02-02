@@ -274,42 +274,27 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         # only when retrieval confidence is clearly low.
 
         if settings.CITATION_STRICT:
-            # Determine maximum retrieval score
-            try:
-                max_score = max(float(src.get("score") or 0.0) for src in sources)
-            except Exception:
-                max_score = 0.0
+            max_score = 0.0
+            for src in sources:
+                raw = (src or {}).get("raw") or {}
+                score = raw.get("score") or raw.get("@search.score") or src.get("score") or 0.0
+                try:
+                    score_val = float(score)
+                except Exception:
+                    score_val = 0.0
+                if score_val > max_score:
+                    max_score = score_val
 
-            # Dynamic guard threshold:
-            # - absolute minimum: 0.05
-            # - or scaled retrieval threshold (x5) if configured
             base_threshold = float(getattr(settings, "SCORE_THRESHOLD", 0.0) or 0.0)
-            guard_min_score = max(0.05, base_threshold * 5.0)
+            guard_min_score = max(0.05, base_threshold * 1.1)
 
-            # Apply lexical relevance guard only when retrieval confidence is low
-            if max_score < guard_min_score:
-                is_relevant = is_relevant_to_sources(embedding_query, sources)
-
-                if not is_relevant:
-                    record_metric("fallback_irrelevant_hits", 1)
-
-                    answer = FALLBACK_MESSAGE
-
-                    if req.thread_id:
-                        memory_store.append(
-                            thread_id=req.thread_id,
-                            user_id=user_id,
-                            role="user",
-                            content=question,
-                        )
-                        memory_store.append(
-                            thread_id=req.thread_id,
-                            user_id=user_id,
-                            role="assistant",
-                            content=answer,
-                        )
-
-                    return RagChatResponse(answer=answer, chunks=[])
+            if max_score < guard_min_score and not is_relevant_to_sources(search_query, sources):
+                record_metric("fallback_irrelevant_hits", 1)
+                answer = FALLBACK_MESSAGE
+                if req.thread_id:
+                    memory_store.append(thread_id, user_id, "user", question)
+                    memory_store.append(thread_id, user_id, "assistant", answer)
+                return RagChatResponse(answer=answer, chunks=[])
 
         # ---------------------------
         # Build the prompt messages
