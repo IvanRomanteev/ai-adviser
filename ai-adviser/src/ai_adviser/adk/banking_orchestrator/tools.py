@@ -6,19 +6,19 @@ docstrings that describe its behaviour and expected arguments.
 
 Tools
 -----
-* ``banking_rag_chat_tool`` вЂ“ proxies a request to an external
-  retrievalвЂ‘augmented generation (RAG) service via HTTP.  It expects
+* ``banking_rag_chat_tool`` – proxies a request to an external
+  retrieval‑augmented generation (RAG) service via HTTP.  It expects
   ``RAG_BASE_URL`` to be set in the environment.
-* ``get_user_basic_profile`` вЂ“ loads a basic user profile from a
+* ``get_user_basic_profile`` – loads a basic user profile from a
   configured source, validates it against a JSON schema and caches
   subsequent calls.  A derived field ``income_monthly_estimate`` is
-  added when ``annual_income`` is present.
-* ``budget_planner_tool`` вЂ“ produces a simple JSON budget plan based
+  added when an annual income is present.
+* ``budget_planner_tool`` – produces a simple JSON budget plan based
   on the user's profile, memory and goal description.  It returns
   structured fields to allow downstream processing.
 
 The functions are pure and do not rely on global state other than
-environment variables and a small inвЂ‘memory cache.  They are safe to
+environment variables and a small in‑memory cache.  They are safe to
 import multiple times.
 """
 
@@ -54,15 +54,41 @@ _profile_mtime: Optional[float] = None
 def _load_profile_source() -> Path:
     """Resolve the profile source file from the environment or fallback.
 
+    This function first checks the ``USER_PROFILE_SOURCE`` environment
+    variable.  If set, its value is returned verbatim.  Otherwise it
+    attempts to locate the bundled demo profile under the package's
+    ``resources`` directory.  As a last resort, it falls back to a
+    relative path that omits the ``src`` prefix.  This guards against
+    situations where the project is imported as ``ai_adviser`` from
+    different roots (e.g. when running tests from the repository root)
+    and the ``src`` directory is not part of ``__file__``.  If none
+    of these candidates exist, the returned path may not exist and
+    callers should handle ``FileNotFoundError`` accordingly.
+
     Returns
     -------
     Path
         The resolved path to the JSON profile document.
     """
-    src = os.environ.get("USER_PROFILE_SOURCE")
-    if src:
-        return Path(src)
-    return _DEFAULT_PROFILE_PATH
+    # If the user specifies a custom source via env, always use it
+    env_src = os.environ.get("USER_PROFILE_SOURCE")
+    if env_src:
+        return Path(env_src)
+    # First attempt: use the default path resolved at import time
+    default_path = _DEFAULT_PROFILE_PATH
+    if default_path.exists():
+        return default_path
+    # Second attempt: look for the same relative path without the ``src`` prefix.
+    # This handles cases where ai_adviser is imported from the repository root
+    # rather than the installed package.  We construct this path lazily to
+    # avoid expensive operations when unnecessary.
+    alt_path = Path("ai_adviser") / "adk" / "banking_orchestrator" / "resources" / "demo-uprof.json"
+    if alt_path.exists():
+        return alt_path
+    # Fall back to default_path even if it doesn't exist; the caller will
+    # raise a FileNotFoundError which surfaces the missing resource more
+    # clearly.
+    return default_path
 
 
 def _load_schema() -> Dict[str, Any]:
@@ -142,7 +168,7 @@ def banking_rag_chat_tool(*, question: str, top_k: int = 5, thread_id: Optional[
     Parameters
     ----------
     question : str
-        The user's question.  Must be nonвЂ‘empty.
+        The user's question.  Must be non‑empty.
     top_k : int, default 5
         The number of top search hits to return from the RAG service.
     thread_id : Optional[str]

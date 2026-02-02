@@ -1,9 +1,9 @@
 """ADK orchestration for the banking adviser use case.
 
 This module defines a `BankingOrchestrator` class which acts as the
-topвЂ‘level agent in an Agent Development Kit (ADK) style workflow.  The
+top‑level agent in an Agent Development Kit (ADK) style workflow.  The
 orchestrator dispatches user requests to one of three tool functions
-depending on the request intent: a retrievalвЂ‘augmented chat tool, a
+depending on the request intent: a retrieval‑augmented chat tool, a
 profile loader and a budget planner.  It also persists user and
 conversation state between invocations using a simple JSON file based
 store.
@@ -22,7 +22,7 @@ provided via environment variables:
     ``demo-uprof.json`` bundled with the repository is used.
 
 ``MEMORY_STORE_PATH``
-    Directory where perвЂ‘user memory files are stored.  Defaults to
+    Directory where per‑user memory files are stored.  Defaults to
     ``.memory`` under the current working directory.  Each file is
     named ``user_<user_id>.json`` and contains the profile,
     conversation history and a rolling summary.
@@ -52,13 +52,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .tools import (
-    banking_rag_chat_tool,
-    get_user_basic_profile,
-    budget_planner_tool,
-)
+# Import the tools module itself rather than the individual functions.  This
+# indirection allows our tests to monkeypatch attributes on the tools
+# module and have those changes observed by the orchestrator.  If we
+# imported the functions directly they would be bound at import time and
+# subsequent monkeypatches would not take effect.  See tests for an
+# example.
+from . import tools
 
-# Attempt to import OpenTelemetry.  If not present tracing will be a noвЂ‘op.
+# Attempt to import OpenTelemetry.  If not present tracing will be a no‑op.
 try:
     from opentelemetry import trace  # type: ignore[import]
     from opentelemetry.trace import Tracer  # type: ignore[import]
@@ -168,7 +170,10 @@ class BankingOrchestrator:
         self.memory = ConversationMemory(mem_dir, user_id)
         # Load the profile into memory at startup
         if not self.memory.get_profile():
-            profile = get_user_basic_profile()
+            # Call through the tools module so that monkeypatches on
+            # tools.get_user_basic_profile are respected.  See tests for
+            # details.
+            profile = tools.get_user_basic_profile()  # type: ignore[call-arg]
             self.memory.set_profile(profile)
             self.memory.persist()
 
@@ -278,12 +283,14 @@ class BankingOrchestrator:
                 span_ctx.__enter__()
             logger.info("Calling tool %s with args=%s", tool_name, {k: v for k, v in args.items() if k != "memory"})
             if tool_name == "banking_rag_chat_tool":
-                return banking_rag_chat_tool(**args)  # type: ignore[arg-type]
+                # Dispatch via the tools module.  Note: mypy may complain
+                # about type arguments but at runtime this is resolved.
+                return tools.banking_rag_chat_tool(**args)  # type: ignore[arg-type]
             if tool_name == "get_user_basic_profile":
-                return get_user_basic_profile()
+                return tools.get_user_basic_profile()  # type: ignore[call-arg]
             if tool_name == "budget_planner_tool":
-                # Inject profile and memory to planner
-                return budget_planner_tool(**args)  # type: ignore[arg-type]
+                # Inject profile and memory to planner via the tools module
+                return tools.budget_planner_tool(**args)  # type: ignore[arg-type]
             raise ValueError(f"Unknown tool: {tool_name}")
         finally:
             if span_ctx:
