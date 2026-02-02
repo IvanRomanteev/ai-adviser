@@ -262,18 +262,54 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                 memory_store.append(thread_id, user_id, "assistant", answer)
             return RagChatResponse(answer=answer, chunks=[])
 
+        # KB-only guard:
+        # Even if retrieval returned chunks, we must ensure they are actually relevant.
+        #
+        # NOTE:
+        # is_relevant_to_sources() is a cheap lexical heuristic (keyword overlap).
+        # It can produce false negatives on follow-up questions
+        # (e.g. "spend" vs earlier chunk about "credit utilization").
+        #
+        # To avoid breaking multi-turn RAG, we apply this guard
+        # only when retrieval confidence is clearly low.
 
-        # KB-only guard: even when retrieval returned chunks, hybrid search can
-        # surface weakly-related snippets for unrelated questions. In strict
-        # mode we require minimal topical overlap between the retrieval query
-        # (embedding_query) and the retrieved snippets; otherwise we fall back.
-        if settings.CITATION_STRICT and not is_relevant_to_sources(embedding_query, sources):
-            record_metric("fallback_irrelevant_hits", 1)
-            answer = FALLBACK_MESSAGE
-            if req.thread_id:
-                memory_store.append(thread_id, user_id, "user", question)
-                memory_store.append(thread_id, user_id, "assistant", answer)
-            return RagChatResponse(answer=answer, chunks=[])
+        if settings.CITATION_STRICT:
+            # Determine maximum retrieval score
+            try:
+                max_score = max(float(src.get("score") or 0.0) for src in sources)
+            except Exception:
+                max_score = 0.0
+
+            # Dynamic guard threshold:
+            # - absolute minimum: 0.05
+            # - or scaled retrieval threshold (x5) if configured
+            base_threshold = float(getattr(settings, "SCORE_THRESHOLD", 0.0) or 0.0)
+            guard_min_score = max(0.05, base_threshold * 5.0)
+
+            # Apply lexical relevance guard only when retrieval confidence is low
+            if max_score < guard_min_score:
+                is_relevant = is_relevant_to_sources(embedding_query, sources)
+
+                if not is_relevant:
+                    record_metric("fallback_irrelevant_hits", 1)
+
+                    answer = FALLBACK_MESSAGE
+
+                    if req.thread_id:
+                        memory_store.append(
+                            thread_id=req.thread_id,
+                            user_id=user_id,
+                            role="user",
+                            content=question,
+                        )
+                        memory_store.append(
+                            thread_id=req.thread_id,
+                            user_id=user_id,
+                            role="assistant",
+                            content=answer,
+                        )
+
+                    return RagChatResponse(answer=answer, chunks=[])
 
         # ---------------------------
         # Build the prompt messages
