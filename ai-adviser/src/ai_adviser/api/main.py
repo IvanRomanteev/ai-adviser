@@ -192,32 +192,39 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         # still perform hybrid search using only the current question.  If
         # rewriting is enabled and yields a non-empty new query, both the
         # embedding and search use that rewritten query.
+        # --- build retrieval queries (text for search + text for embedding) ---
         embedding_query = question
         search_query = question
-        history: List[dict[str, str]] = []
+
+        history: list[dict[str, str]] = []
         if req.thread_id:
             history = memory_store.get_history(thread_id)
-            summary: Optional[str] = None
-            if settings.REWRITE_ENABLED and settings.SUMMARY_ENABLED:
-                summary = memory_store.get_latest_summary(thread_id)
-            recent_contents: List[str] = []
-            if history:
-                recent_subset = history[-settings.REWRITE_LAST_N :]
-                recent_contents = [msg.get("content") or "" for msg in recent_subset]
-            new_query: Optional[str] = None
+
+            # если rewrite включён — он должен менять и embedding_query, и search_query
+            new_query: str | None = None
             if settings.REWRITE_ENABLED:
+                summary: str | None = None
+                if settings.SUMMARY_ENABLED:
+                    summary = memory_store.get_latest_summary(thread_id)
+
+                recent_subset = history[-settings.REWRITE_LAST_N:] if history else []
+                recent_contents = [m.get("content") or "" for m in recent_subset]
+
                 new_query = rewrite_query(summary, recent_contents, question)
-            # If rewriting produced a query, use it for both embedding and search.
+
             if new_query:
                 embedding_query = new_query
                 search_query = new_query
             else:
-                # Without rewriting, embed the concatenation of the last
-                # user message and current question when there is history.
-                prev_user_msgs = [m["content"] for m in history if m.get("role") == "user"]
-                if prev_user_msgs and len(history) >= 2:
-                    embedding_query = f"{prev_user_msgs[-1]} {question}"
-                # Для поиска всегда используем текущий вопрос
+                # rewrite выключен (или вернул пусто) — историю добавляем ТОЛЬКО в embedding
+                prev_user = next(
+                    (m.get("content") for m in reversed(history) if m.get("role") == "user" and m.get("content")),
+                    None,
+                )
+                if prev_user:
+                    embedding_query = f"{prev_user} {question}".strip()
+
+                # ВАЖНО: hybrid_search должен получать только текущий вопрос
                 search_query = question
 
         # ---------------------------
