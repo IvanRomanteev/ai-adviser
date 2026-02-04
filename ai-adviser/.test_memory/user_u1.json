@@ -1,0 +1,236 @@
+{
+  "profile": {
+    "user_id": "u1"
+  },
+  "history": {
+    "t": [
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      },
+      {
+        "role": "user",
+        "content": "I want to save for a car"
+      },
+      {
+        "role": "assistant",
+        "content": "{\"goal_summary\": \"I want to save for a car\"}"
+      },
+      {
+        "role": "user",
+        "content": "What is your fee?"
+      },
+      {
+        "role": "assistant",
+        "content": "rag"
+      }
+    ]
+  },
+  "summary": {
+    "t": "I want to save for a car\n{\"goal_summary\": \"I want to save for a car\"}\nWhat is your fee?\nrag\nI want to save for a car\n{\"goal_summary\": \"I want to save for a car\"}\nWhat is your fee?\nrag\nI want to save for a car\n{\"goal_summary\": \"I want to save for a car\"}\nWhat is your fee?\nrag\nI want to save for a car\n{\"goal_summary\": \"I want to save for a car\"}\nWhat is your fee?\nrag\nI want to save for a car\n{\"goal_summary\": \"I want to save for a car\"}\nWhat is your fee?\nrag\nI want to save for a car\n{\"goal_summary\""
+  }
+}

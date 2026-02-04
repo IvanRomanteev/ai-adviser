@@ -1,4 +1,4 @@
-# src/ai_adviser/clients/azure_models.py
+# srcc/ai_adviser/clients/azure_models.py
 from __future__ import annotations
 
 from functools import lru_cache
