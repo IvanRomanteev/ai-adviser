@@ -55,7 +55,11 @@ def test_banking_rag_chat_tool_success(monkeypatch: pytest.MonkeyPatch) -> None:
         mock_resp.json.return_value = {"answer": "42", "chunks": []}
         return mock_resp
 
-    monkeypatch.setattr(tools, "_post_with_retry", lambda url, payload, timeout=5.0: mock_post(url, payload, timeout))
+    monkeypatch.setattr(
+        tools,
+        "_post_with_retry",
+        lambda url, payload, headers=None, timeout=5.0: mock_post(url, payload, timeout),
+    )
     result = tools.banking_rag_chat_tool(question="Test question", user_id="u1")
     assert result["answer"] == "42"
     assert result["status_code"] == 200
@@ -66,7 +70,13 @@ def test_banking_rag_chat_tool_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RAG_BASE_URL", "https://api.example.com")
     def mock_post(url: str, json: Dict[str, Any], timeout: float) -> MagicMock:
         raise requests.RequestException("boom")
-    monkeypatch.setattr(tools, "_post_with_retry", lambda url, payload, timeout=5.0: mock_post(url, payload, timeout))
+
+    monkeypatch.setattr(
+        tools,
+        "_post_with_retry",
+        lambda url, payload, headers=None, timeout=5.0: mock_post(url, payload, timeout),
+    )
+
     result = tools.banking_rag_chat_tool(question="fail", user_id="u1")
     assert "error" in result
 

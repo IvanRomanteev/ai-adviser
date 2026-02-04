@@ -1,25 +1,25 @@
-"""Tool functions used by the banking orchestrator.
+"""Banking orchestrator tools.
 
-This module defines three tool functions which can be registered with an
-ADK assistant.  Each tool has a clear signature with type hints and
-docstrings that describe its behaviour and expected arguments.
+This module provides three functions used by the ADK demo agent and the
+``BankingOrchestrator`` wrapper:
 
-Tools
------
-* ``banking_rag_chat_tool`` – proxies a request to an external
-  retrieval‑augmented generation (RAG) service via HTTP.  It expects
-  ``RAG_BASE_URL`` to be set in the environment.
-* ``get_user_basic_profile`` – loads a basic user profile from a
-  configured source, validates it against a JSON schema and caches
-  subsequent calls.  A derived field ``income_monthly_estimate`` is
-  added when an annual income is present.
-* ``budget_planner_tool`` – produces a simple JSON budget plan based
-  on the user's profile, memory and goal description.  It returns
-  structured fields to allow downstream processing.
+* ``banking_rag_chat_tool``  – calls the FastAPI ``/rag_chat`` endpoint.
+* ``get_user_basic_profile`` – loads and validates a user profile JSON.
+* ``budget_planner_tool``    – creates a simple budget/savings plan.
 
-The functions are pure and do not rely on global state other than
-environment variables and a small in‑memory cache.  They are safe to
-import multiple times.
+This version is intentionally more defensive for ADK WebUI tool-calling:
+
+* ``budget_planner_tool`` no longer requires callers to provide ``profile``,
+  ``memory`` or ``request_id``. If missing, it will load/extract them.
+* ``banking_rag_chat_tool`` supports passing HTTP headers and always sets
+  ``X-Request-ID`` for tracing.
+* ``banking_rag_chat_tool`` returns a ``not_found`` boolean to make it easier
+  for the orchestrator/LLM to stop retry loops.
+* Optional one-shot retry: if the call returns the fallback
+  "Not found in the knowledge base.", the tool retries once (max) with:
+  - top_k bumped to at least 10, and
+  - thread_id removed (stateless) when thread_id was provided
+  This mitigates \"topic poisoning\" when the user switches topics mid-thread.
 """
 
 from __future__ import annotations
@@ -27,68 +27,42 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import requests
+from jsonschema import ValidationError
+from jsonschema import validate as jsonschema_validate
 from requests import Response
-from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
-from jsonschema import validate as jsonschema_validate, ValidationError
-
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Determine package resource paths.  These files are installed alongside
-# this module and provide the JSON schema and default profile example.
 _RESOURCE_DIR = Path(__file__).resolve().parent / "resources"
 _SCHEMA_PATH = _RESOURCE_DIR / "fdecl-userprofile-v1.json"
 _DEFAULT_PROFILE_PATH = _RESOURCE_DIR / "demo-uprof.json"
 
-# Cache for the user profile; keyed by last modified timestamp
 _profile_cache: Optional[Dict[str, Any]] = None
 _profile_mtime: Optional[float] = None
 
+FALLBACK_MESSAGE = "Not found in the knowledge base."
+
 
 def _load_profile_source() -> Path:
-    """Resolve the profile source file from the environment or fallback.
-
-    This function first checks the ``USER_PROFILE_SOURCE`` environment
-    variable.  If set, its value is returned verbatim.  Otherwise it
-    attempts to locate the bundled demo profile under the package's
-    ``resources`` directory.  As a last resort, it falls back to a
-    relative path that omits the ``src`` prefix.  This guards against
-    situations where the project is imported as ``ai_adviser`` from
-    different roots (e.g. when running tests from the repository root)
-    and the ``src`` directory is not part of ``__file__``.  If none
-    of these candidates exist, the returned path may not exist and
-    callers should handle ``FileNotFoundError`` accordingly.
-
-    Returns
-    -------
-    Path
-        The resolved path to the JSON profile document.
-    """
-    # If the user specifies a custom source via env, always use it
     env_src = os.environ.get("USER_PROFILE_SOURCE")
     if env_src:
         return Path(env_src)
-    # First attempt: use the default path resolved at import time
-    default_path = _DEFAULT_PROFILE_PATH
-    if default_path.exists():
-        return default_path
-    # Second attempt: look for the same relative path without the ``src`` prefix.
-    # This handles cases where ai_adviser is imported from the repository root
-    # rather than the installed package.  We construct this path lazily to
-    # avoid expensive operations when unnecessary.
+
+    if _DEFAULT_PROFILE_PATH.exists():
+        return _DEFAULT_PROFILE_PATH
+
     alt_path = Path("ai_adviser") / "adk" / "banking_orchestrator" / "resources" / "demo-uprof.json"
     if alt_path.exists():
         return alt_path
-    # Fall back to default_path even if it doesn't exist; the caller will
-    # raise a FileNotFoundError which surfaces the missing resource more
-    # clearly.
-    return default_path
+
+    return _DEFAULT_PROFILE_PATH
 
 
 def _load_schema() -> Dict[str, Any]:
@@ -97,49 +71,33 @@ def _load_schema() -> Dict[str, Any]:
 
 
 def get_user_basic_profile(*, request_id: Optional[str] = None) -> Dict[str, Any]:
-    """Load a basic user profile and validate it against the schema.
+    """Load + validate the user profile JSON, with caching by file mtime."""
+    _ = request_id
 
-    This function reads a JSON document from the path specified by the
-    ``USER_PROFILE_SOURCE`` environment variable.  When that variable
-    is not set it falls back to an example profile bundled with the
-    package.  The loaded profile is validated using the JSON schema in
-    ``fdecl-userprofile-v1.json``.  A derived field
-    ``income_monthly_estimate`` is added when ``annual_income`` is
-    present and numeric.  Subsequent calls return a cached copy until
-    the source file's modification time changes.
-
-    Parameters
-    ----------
-    request_id : Optional[str]
-        Optional request identifier for logging.  Ignored otherwise.
-
-    Returns
-    -------
-    dict
-        The validated and possibly augmented profile.
-    """
     global _profile_cache, _profile_mtime
     src_path = _load_profile_source()
+
     try:
         mtime = src_path.stat().st_mtime
-    except FileNotFoundError:
-        raise FileNotFoundError(f"User profile source not found: {src_path}")
-    # Return cached profile if source has not changed
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"User profile source not found: {src_path}") from e
+
     if _profile_cache is not None and _profile_mtime == mtime:
         return _profile_cache
-    # Load and validate
+
     with src_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
-    schema = _load_schema().get("Output")
+
+    schema = _load_schema()
     try:
         jsonschema_validate(instance=data, schema=schema)
     except ValidationError as e:
-        raise ValueError(f"User profile failed schema validation: {e.message}") from e
-    # Compute derived fields
-    annual = data.get("annual_income")
-    if isinstance(annual, (int, float)) and annual > 0:
-        data["income_monthly_estimate"] = round(annual / 12, 2)
-    # Cache and return
+        raise ValueError(f"User profile validation failed: {e.message}") from e
+
+    annual_income = data.get("annual_income")
+    if isinstance(annual_income, (int, float)):
+        data["income_monthly_estimate"] = float(annual_income) / 12.0
+
     _profile_cache = data
     _profile_mtime = mtime
     return data
@@ -147,195 +105,175 @@ def get_user_basic_profile(*, request_id: Optional[str] = None) -> Dict[str, Any
 
 @retry(
     stop=stop_after_attempt(3),
-    wait=wait_fixed(1.0),
-    retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
+    wait=wait_fixed(1),
+    retry=retry_if_exception_type(requests.RequestException),
 )
-def _post_with_retry(url: str, payload: Dict[str, Any], timeout: float = 5.0) -> Response:
-    """Helper to POST JSON payloads with retry and timeout.
-
-    Retries on network errors and HTTP status codes >= 500.
-    """
-    resp = requests.post(url, json=payload, timeout=timeout)
-    # Raise for 5xx to trigger retry
-    if resp.status_code >= 500:
-        resp.raise_for_status()
-    return resp
+def _post_with_retry(
+    url: str,
+    payload: Dict[str, Any],
+    *,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: float = 5.0,
+) -> Response:
+    return requests.post(url, json=payload, headers=headers, timeout=timeout)
 
 
-def banking_rag_chat_tool(*, question: str, top_k: int = 5, thread_id: Optional[str] = None, user_id: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
-    """Query the external RAG service for an answer to a banking question.
+def _is_fallback_answer(answer: Any) -> bool:
+    return isinstance(answer, str) and answer.strip() == FALLBACK_MESSAGE
 
-    Parameters
-    ----------
-    question : str
-        The user's question.  Must be non‑empty.
-    top_k : int, default 5
-        The number of top search hits to return from the RAG service.
-    thread_id : Optional[str]
-        Conversation identifier forwarded to the RAG service.  When
-        provided, the service may leverage conversation memory.
-    user_id : Optional[str]
-        Identifier of the user.  Included for analytics or memory in the
-        RAG service.  May be ``None``.
-    request_id : Optional[str]
-        Optional request identifier for observability.  Included as a
-        header ``X-Request-ID`` on the outgoing HTTP call.
 
-    Returns
-    -------
-    dict
-        A dictionary containing the RAG service's response.  On error
-        the dictionary will contain an ``error`` key with a message.
-    """
-    base_url = os.environ.get("RAG_BASE_URL")
-    if not base_url:
-        return {"error": "RAG_BASE_URL environment variable is not set"}
-    question = (question or "").strip()
-    if not question:
-        return {"error": "Question must not be empty"}
-    payload = {
+def banking_rag_chat_tool(
+    *,
+    question: str,
+    top_k: int = 5,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: float = 5.0,
+    allow_stateless_retry: bool = True,
+) -> Dict[str, Any]:
+    """Call the external RAG service. Returns JSON + status_code + not_found."""
+    base_url = os.environ.get("RAG_BASE_URL", "http://localhost:8000")
+    url = base_url.rstrip("/") + "/rag_chat"
+
+    if request_id is None or not str(request_id).strip():
+        request_id = uuid.uuid4().hex
+
+    payload: Dict[str, Any] = {
         "question": question,
         "top_k": top_k,
         "thread_id": thread_id,
         "user_id": user_id,
+        "request_id": request_id,
     }
-    url = base_url.rstrip("/") + "/rag_chat"
-    headers = {}
-    if request_id:
-        headers["X-Request-ID"] = request_id
+
+    req_headers: Dict[str, str] = {}
+    if headers:
+        req_headers.update({k: str(v) for k, v in headers.items()})
+    req_headers.setdefault("X-Request-ID", request_id)
+
     try:
-        resp = _post_with_retry(url, payload)
+        resp = _post_with_retry(url, payload, headers=req_headers, timeout=timeout)
+        try:
+            body: Dict[str, Any] = resp.json()
+        except Exception:
+            body = {"error": "Invalid JSON response from RAG service", "raw": resp.text}
+
+        body.setdefault("status_code", resp.status_code)
+        body.setdefault("request_id", request_id)
+
+        body["not_found"] = _is_fallback_answer(body.get("answer"))
+
+        # One-shot retry (max one additional call):
+        # - bump top_k to >= 10
+        # - if thread_id was used, retry without thread_id (stateless) to avoid topic poisoning
+        if body["not_found"] and allow_stateless_retry:
+            retry_payload = dict(payload)
+            changed = False
+
+            retry_top_k = max(int(top_k), 10)
+            if retry_top_k != int(top_k):
+                retry_payload["top_k"] = retry_top_k
+                changed = True
+
+            if thread_id:
+                retry_payload["thread_id"] = None
+                changed = True
+
+            if changed:
+                resp2 = _post_with_retry(url, retry_payload, headers=req_headers, timeout=timeout)
+                try:
+                    body2: Dict[str, Any] = resp2.json()
+                except Exception:
+                    body2 = {"error": "Invalid JSON response from RAG service", "raw": resp2.text}
+
+                body2.setdefault("status_code", resp2.status_code)
+                body2.setdefault("request_id", request_id)
+                body2["not_found"] = _is_fallback_answer(body2.get("answer"))
+
+                if not body2["not_found"] and "error" not in body2:
+                    body2["retrieval_mode"] = "retry_top_k_or_stateless"
+                    return body2
+
+        return body
+
     except Exception as e:
         logger.exception("RAG chat HTTP call failed: %s", e)
-        return {"error": f"RAG request failed: {type(e).__name__}"}
-    # Attempt to parse JSON body
-    try:
-        body = resp.json()
-    except Exception:
-        body = {"answer": resp.text}
-    # Annotate with HTTP status
-    body.setdefault("status_code", resp.status_code)
-    return body
+        return {"error": str(e), "not_found": True, "request_id": request_id}
 
 
-def budget_planner_tool(*, goal: str, thread_id: str, user_id: str, profile: Dict[str, Any], memory: Any, request_id: str) -> Dict[str, Any]:
-    """Plan a savings budget for a user goal.
+def budget_planner_tool(
+    *,
+    goal: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    profile: Optional[Dict[str, Any]] = None,
+    memory: Optional[Any] = None,
+    request_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a simple budget plan for a given goal.
 
-    Given a description of the user's goal (e.g. "I want to buy a car") and
-    access to the user's profile and conversation memory, this tool
-    generates a structured budget plan.  It makes reasonable
-    assumptions based on the user's income and location, outlines the
-    monthly budget categories, estimates how long it might take to save
-    for the goal, highlights potential risks and suggests next steps.
-
-    Parameters
-    ----------
-    goal : str
-        Natural language description of the goal the user wants to
-        achieve.  Examples include "buy a car", "save for a house
-        deposit" or "build an emergency fund".
-    thread_id : str
-        Conversation identifier.  Not used in the current
-        implementation but accepted for API symmetry.
-    user_id : str
-        Identifier of the user.  Not used directly but included for
-        completeness.
-    profile : dict
-        The user's basic profile as returned by ``get_user_basic_profile``.
-    memory : Any
-        A ``ConversationMemory`` instance that can be inspected for past
-        decisions or user preferences.  For the MVP we do not
-        introspect the history.
-    request_id : str
-        Identifier for the current request used for logging.
-
-    Returns
-    -------
-    dict
-        A structured plan with the following keys: ``goal_summary``,
-        ``assumptions``, ``questions_needed``, ``monthly_budget_plan``,
-        ``savings_plan``, ``risks_and_tradeoffs`` and ``next_actions``.
+    Robust to ADK tool-call argument mistakes:
+    - profile can be omitted or nested under memory.profile
+    - request_id can be omitted/null
     """
-    # Extract monthly income estimate; fall back to annual
-    income_monthly = profile.get("income_monthly_estimate")
-    if income_monthly is None:
-        annual = profile.get("annual_income")
-        if isinstance(annual, (int, float)) and annual > 0:
-            income_monthly = round(annual / 12, 2)
-    # Basic allocation percentages (50/30/20 rule)
-    essentials_pct = 0.5
-    savings_pct = 0.2
-    discretionary_pct = 0.3
-    assumptions: List[str] = []
-    if income_monthly is not None:
-        assumptions.append(
-            f"Estimated monthly income is ${income_monthly:.2f} based on profile"
-        )
-    else:
-        assumptions.append("Income information unavailable; using conservative estimates")
-        income_monthly = 0.0
-    # Determine a nominal goal amount (very rough guess)
-    goal_lower = goal.lower()
-    nominal_amount = None
-    if "car" in goal_lower:
-        nominal_amount = 30000.0
-    elif any(word in goal_lower for word in ["house", "home", "apartment"]):
-        nominal_amount = 600000.0
-    elif "emergency" in goal_lower:
-        nominal_amount = income_monthly * 3
-    elif "vacation" in goal_lower:
-        nominal_amount = 5000.0
-    else:
-        nominal_amount = income_monthly * 6  # default: six months of income
-    assumptions.append(
-        f"Nominal goal amount estimated at ${nominal_amount:,.2f} based on goal description"
-    )
-    # Build monthly budget plan
-    essentials = round(income_monthly * essentials_pct, 2)
-    savings = round(income_monthly * savings_pct, 2)
-    discretionary = round(income_monthly * discretionary_pct, 2)
-    monthly_budget_plan = [
-        {"category": "Essentials", "amount": essentials, "notes": "housing, food, insurance"},
-        {"category": "Savings", "amount": savings, "notes": "goal and emergency fund"},
-        {"category": "Discretionary", "amount": discretionary, "notes": "entertainment, hobbies"},
-    ]
-    # Estimate months to save for the goal
-    if savings > 0:
-        months = int(max(nominal_amount - (savings * 2), 0) / savings) + 2
-    else:
-        months = 0
-    savings_plan = {
-        "target_amount": nominal_amount,
-        "monthly_savings": savings,
-        "estimated_months": months,
-        "description": f"Save ${savings:,.2f} per month to reach ${nominal_amount:,.2f} in {months} months",
-    }
-    # Identify additional questions needed to refine the plan
-    questions_needed: List[str] = []
-    if nominal_amount == income_monthly * 6:
-        questions_needed.append(
-            "What is the precise amount you are aiming to save for this goal?"
-        )
-    # Risks and tradeoffs
-    risks_and_tradeoffs = [
-        "Unexpected expenses could delay your savings timeline",
-        "Investment returns may vary; consider keeping an emergency fund separate",
-        "Inflation can erode purchasing power over time",
-    ]
-    # Next actions
-    next_actions = [
-        "Open a dedicated savings account for your goal",
-        "Automate monthly transfers of the savings amount",
-        "Review your budget quarterly and adjust as needed",
-        "Investigate financing options specific to your goal (e.g. auto loans, mortgages)",
-        "Consult a financial advisor for personalised advice",
-    ]
+    if request_id is None or not str(request_id).strip():
+        request_id = uuid.uuid4().hex
+
+    # ADK sometimes nests profile under memory.profile
+    if profile is None and isinstance(memory, dict):
+        maybe_profile = memory.get("profile")
+        if isinstance(maybe_profile, dict):
+            profile = maybe_profile
+
+    if profile is None:
+        profile = get_user_basic_profile(request_id=request_id)
+
+    monthly_income = profile.get("income_monthly_estimate")
+    annual_income = profile.get("annual_income")
+    if monthly_income is None and isinstance(annual_income, (int, float)):
+        monthly_income = float(annual_income) / 12.0
+
+    if monthly_income is None:
+        return {"error": "Cannot compute monthly income from profile", "request_id": request_id}
+
+    monthly_income_f = float(monthly_income)
+
+    essentials = monthly_income_f * 0.5
+    savings = monthly_income_f * 0.2
+    discretionary = monthly_income_f * 0.3
+
     return {
         "goal_summary": goal,
-        "assumptions": assumptions,
-        "questions_needed": questions_needed,
-        "monthly_budget_plan": monthly_budget_plan,
-        "savings_plan": savings_plan,
-        "risks_and_tradeoffs": risks_and_tradeoffs,
-        "next_actions": next_actions,
+        "assumptions": {
+            "monthly_income": round(monthly_income_f, 2),
+            "essential_pct": 0.5,
+            "savings_pct": 0.2,
+            "discretionary_pct": 0.3,
+        },
+        "questions_needed": [
+            "What is your target amount and timeframe for this goal?",
+            "Do you have any existing debts or obligations that affect your budget?",
+        ],
+        "monthly_budget_plan": [
+            {"category": "Essentials", "amount": round(essentials, 2)},
+            {"category": "Savings", "amount": round(savings, 2)},
+            {"category": "Discretionary", "amount": round(discretionary, 2)},
+        ],
+        "savings_plan": {
+            "suggested_monthly_savings": round(savings, 2),
+            "notes": "Consider automating savings transfers to reach your goal faster.",
+        },
+        "risks_and_tradeoffs": [
+            "Unexpected expenses may require reducing discretionary spending.",
+            "If essential costs exceed 50%, adjust allocations accordingly.",
+        ],
+        "next_actions": [
+            "Track your spending for the next month to validate these assumptions.",
+            "Adjust categories based on actual spending and goal requirements.",
+        ],
+        "request_id": request_id,
+        "thread_id": thread_id,
+        "user_id": user_id,
     }
