@@ -49,7 +49,6 @@ import os
 import pathlib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 # Import the tools module itself rather than the individual functions.  This
@@ -78,6 +77,26 @@ def _ensure_dir(path: pathlib.Path) -> None:
     """Ensure that a directory exists."""
     if not path.exists():
         path.mkdir(parents=True, exist_ok=True)
+
+
+def _strip_grounding_appendix(text: str) -> str:
+    """Remove the structured grounding appendix from the assistant answer before persisting.
+
+    This prevents memory/summary pollution with:
+      - "Grounding note"
+      - "Closest sources: ..."
+    """
+    if not isinstance(text, str):
+        return str(text)
+
+    if ("Grounding note" in text) and ("Closest sources" in text):
+        # structured fallback uses '---' separator
+        if "\n---\n" in text:
+            return text.split("\n---\n", 1)[0].strip()
+        if "---" in text:
+            return text.split("---", 1)[0].strip()
+
+    return text.strip()
 
 
 @dataclass
@@ -161,11 +180,12 @@ class BankingOrchestrator:
     "..."
     """
 
-    def __init__(self, user_id: str, *, memory_store_path: Optional[str] = None) -> None:
+    def __init__(
+        self, user_id: str, *, memory_store_path: Optional[str] = None
+    ) -> None:
         self.user_id = user_id
         mem_dir = pathlib.Path(
-            memory_store_path
-            or os.environ.get("MEMORY_STORE_PATH", ".memory")
+            memory_store_path or os.environ.get("MEMORY_STORE_PATH", ".memory")
         )
         self.memory = ConversationMemory(mem_dir, user_id)
         # Load the profile into memory at startup
@@ -220,8 +240,11 @@ class BankingOrchestrator:
         """
         if not message or not message.strip():
             raise ValueError("message must not be empty")
+
         question = message.strip()
         tid = thread_id or "default"
+        tool_thread_id = thread_id  # pass None to tools when caller is stateless
+
         # Generate a request ID for observability
         request_id = uuid.uuid4().hex
         logger.info(
@@ -231,8 +254,10 @@ class BankingOrchestrator:
             tid,
             question,
         )
+
         # Retrieve profile for personalisation
         profile = self.memory.get_profile()
+
         # Determine intent based on simple keyword matching
         lower = question.lower()
         if any(kw in lower for kw in ["budget", "plan", "goal", "save", "buy", "purchase"]):
@@ -246,31 +271,42 @@ class BankingOrchestrator:
                 "request_id": request_id,
             }
             result = self._call_tool(tool_name, args)
+
         elif any(kw in lower for kw in ["profile", "who am i", "about me"]):
             tool_name = "get_user_basic_profile"
             args = {"request_id": request_id}
             result = self._call_tool(tool_name, args)
+
         else:
             tool_name = "banking_rag_chat_tool"
             args = {
                 "question": question,
                 "top_k": 5,
-                "thread_id": tid,
+                "thread_id": tool_thread_id,
                 "user_id": self.user_id,
                 "request_id": request_id,
             }
             result = self._call_tool(tool_name, args)
+
         # Append to history if we have a thread id
         if thread_id:
             self.memory.append_history(tid, "user", question)
-            # Determine assistant content for memory: prefer answer field if present
-            assistant_content = result.get("answer") or json.dumps(result, ensure_ascii=False)
+
+            # Persist assistant content without structured grounding appendix
+            assistant_content = result.get("answer")
+            if isinstance(assistant_content, str) and assistant_content.strip():
+                assistant_content = _strip_grounding_appendix(assistant_content)
+            else:
+                assistant_content = json.dumps(result, ensure_ascii=False)
+
             self.memory.append_history(tid, "assistant", assistant_content)
+
             # Possibly summarise conversation
             summary = self._summarize_history(tid)
             if summary:
                 self.memory.set_summary(tid, summary)
             self.memory.persist()
+
         return result
 
     def _call_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -278,20 +314,31 @@ class BankingOrchestrator:
         span_ctx = None
         if _tracer is not None:
             span_ctx = _tracer.start_as_current_span(tool_name)
+
         try:
             if span_ctx:
                 span_ctx.__enter__()
-            logger.info("Calling tool %s with args=%s", tool_name, {k: v for k, v in args.items() if k != "memory"})
+
+            logger.info(
+                "Calling tool %s with args=%s",
+                tool_name,
+                {k: v for k, v in args.items() if k != "memory"},
+            )
+
             if tool_name == "banking_rag_chat_tool":
                 # Dispatch via the tools module.  Note: mypy may complain
                 # about type arguments but at runtime this is resolved.
                 return tools.banking_rag_chat_tool(**args)  # type: ignore[arg-type]
+
             if tool_name == "get_user_basic_profile":
                 return tools.get_user_basic_profile()  # type: ignore[call-arg]
+
             if tool_name == "budget_planner_tool":
                 # Inject profile and memory to planner via the tools module
                 return tools.budget_planner_tool(**args)  # type: ignore[arg-type]
+
             raise ValueError(f"Unknown tool: {tool_name}")
+
         finally:
             if span_ctx:
                 span_ctx.__exit__(None, None, None)

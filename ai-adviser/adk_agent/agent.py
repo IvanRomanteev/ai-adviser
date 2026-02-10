@@ -42,8 +42,9 @@ root_agent: LlmAgent = LlmAgent(
       Always use the RAG tool.
     - Call **at most one tool per user message**. Never call the same tool repeatedly
       for the same user message.
-    - If a tool returns an error or the fallback message "Not found in the knowledge base.",
+    - If a tool returns an error, OR `not_found` is true, OR `grounding_warning` is true,
       do NOT retry tools in a loop. Respond to the user and stop.
+
 
     **Routing rules:**
     1) **Profile**: If the user asks for their profile ("profile", "who am I", "about me"),
@@ -55,13 +56,14 @@ root_agent: LlmAgent = LlmAgent(
        - After the tool returns, respond with **exactly the JSON returned by the tool** (no edits).
 
     3) **Everything else banking-related**: call `banking_rag_chat_tool`.
-       - If the question is a follow-up that depends on earlier context (e.g., contains
-         "it/they/that/this"), rewrite it into a standalone question before calling the tool.
-       - After the tool returns:
-         * If `error` is present: tell the user the tool failed and include the error.
-         * Otherwise: reply with `answer` (plain text). Do not add facts.
-         * If `not_found` is true or `answer` equals the fallback message, ask 1-2 clarifying
-           questions (e.g., which bank/product/country), but do not call another tool.
+       * If `error` is present: tell the user the tool failed and include the error.
+       * Otherwise: reply with `answer` (plain text). Do not add facts.
+       * If `not_found` is true or `answer` equals the fallback message:
+       ask 1-2 clarifying questions (bank/product/country), but do not call another tool.
+       * If `grounding_warning` is true:
+       return `answer` as-is AND ask 1-2 clarifying questions to narrow retrieval
+       (bank/product/country/timeframe), but do not call another tool.
+
     """,
     tools=[
         banking_rag_chat_tool,

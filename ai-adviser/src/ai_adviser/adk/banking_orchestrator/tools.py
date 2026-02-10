@@ -53,16 +53,42 @@ FALLBACK_MESSAGE = "Not found in the knowledge base."
 def _load_profile_source() -> Path:
     env_src = os.environ.get("USER_PROFILE_SOURCE")
     if env_src:
-        return Path(env_src)
+        p = Path(env_src).expanduser()
+        # если передали относительный путь — трактуем относительно текущего cwd
+        return p if p.is_absolute() else (Path.cwd() / p).resolve()
 
+    # 1) дефолт рядом с tools.py (самый правильный)
     if _DEFAULT_PROFILE_PATH.exists():
         return _DEFAULT_PROFILE_PATH
 
-    alt_path = Path("ai_adviser") / "adk" / "banking_orchestrator" / "resources" / "demo-uprof.json"
-    if alt_path.exists():
-        return alt_path
+    # 2) если запускаешь из репо с src-layout
+    src_layout = (
+        Path.cwd()
+        / "src"
+        / "ai_adviser"
+        / "adk"
+        / "banking_orchestrator"
+        / "resources"
+        / "demo-uprof.json"
+    )
+    if src_layout.exists():
+        return src_layout
 
+    # 3) legacy layout без src/
+    legacy = (
+        Path.cwd()
+        / "ai_adviser"
+        / "adk"
+        / "banking_orchestrator"
+        / "resources"
+        / "demo-uprof.json"
+    )
+    if legacy.exists():
+        return legacy
+
+    # ничего не нашли — вернём дефолт, чтобы сообщение об ошибке было предсказуемым
     return _DEFAULT_PROFILE_PATH
+
 
 
 def _load_schema() -> Dict[str, Any]:
@@ -121,6 +147,27 @@ def _post_with_retry(
 def _is_fallback_answer(answer: Any) -> bool:
     return isinstance(answer, str) and answer.strip() == FALLBACK_MESSAGE
 
+def _has_grounding_warning(answer: Any) -> bool:
+    if not isinstance(answer, str):
+        return False
+    # достаточно устойчиво: оба маркера сразу
+    return ("Grounding note" in answer) and ("Closest sources" in answer)
+
+
+def _normalize_chunks_aliases(body: Dict[str, Any]) -> None:
+    """Make chunk URL accessible via both `source_file` and `blob_url` keys."""
+    chunks = body.get("chunks")
+    if not isinstance(chunks, list):
+        return
+    for ch in chunks:
+        if not isinstance(ch, dict):
+            continue
+        # API отдаёт source_file, некоторые клиенты ожидают blob_url
+        if ch.get("blob_url") is None and ch.get("source_file"):
+            ch["blob_url"] = ch["source_file"]
+        if ch.get("source_file") is None and ch.get("blob_url"):
+            ch["source_file"] = ch["blob_url"]
+
 
 def banking_rag_chat_tool(
     *,
@@ -163,12 +210,19 @@ def banking_rag_chat_tool(
         body.setdefault("status_code", resp.status_code)
         body.setdefault("request_id", request_id)
 
+        answer = body.get("answer")
+        body["not_found"] = _is_fallback_answer(answer)
+        body["grounding_warning"] = _has_grounding_warning(answer)
+        _normalize_chunks_aliases(body)
+
+
         body["not_found"] = _is_fallback_answer(body.get("answer"))
 
         # One-shot retry (max one additional call):
         # - bump top_k to >= 10
         # - if thread_id was used, retry without thread_id (stateless) to avoid topic poisoning
-        if body["not_found"] and allow_stateless_retry:
+        if (body["not_found"] or body.get("grounding_warning", False)) and allow_stateless_retry:
+
             retry_payload = dict(payload)
             changed = False
 
@@ -192,9 +246,20 @@ def banking_rag_chat_tool(
                 body2.setdefault("request_id", request_id)
                 body2["not_found"] = _is_fallback_answer(body2.get("answer"))
 
-                if not body2["not_found"] and "error" not in body2:
+                answer2 = body2.get("answer")
+                body2["not_found"] = _is_fallback_answer(answer2)
+                body2["grounding_warning"] = _has_grounding_warning(answer2)
+                _normalize_chunks_aliases(body2)
+
+
+                if (
+                    "error" not in body2
+                    and not body2["not_found"]
+                    and not body2.get("grounding_warning", False)
+                ):
                     body2["retrieval_mode"] = "retry_top_k_or_stateless"
                     return body2
+
 
         return body
 

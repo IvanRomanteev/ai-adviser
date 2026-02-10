@@ -60,8 +60,30 @@ def test_rag_chat_missing_citations_returns_not_found(monkeypatch) -> None:
     resp = client.post("/rag_chat", json={"question": "How does interest work?", "top_k": 1})
     assert resp.status_code == 200
     data = resp.json()
-    assert data["answer"] == "Not found in the knowledge base."
-    assert data["chunks"] == []
+    # New behavior: structured fallback that preserves the model answer
+    assert "This answer has no citations." in data["answer"]
+    assert "Grounding note" in data["answer"]
+    assert "Closest sources:" in data["answer"]
+    assert "http://example.com/doc1" in data["answer"]
+
+
+    # Keep existing strict behavior: no chunks are returned on citation failure
+    # New behavior: chunks are still returned (useful for inspection / UI)
+    assert len(data["chunks"]) == 1
+
+    chunk0 = data["chunks"][0]
+    assert "interest" in chunk0["content"]
+    # URL может быть не на верхнем уровне, поэтому ищем в разных местах
+    blob_url = (
+            chunk0.get("blob_url")
+            or chunk0.get("source_file")  # <-- ВОТ ЭТОГО НЕ ХВАТАЛО
+            or (chunk0.get("metadata") or {}).get("blob_url")
+            or (chunk0.get("raw") or {}).get("blob_url")
+            or (chunk0.get("raw") or {}).get("source_file")
+            or (chunk0.get("source") or "")
+            or ""
+    )
+    assert "http://example.com/doc1" in blob_url
 
 
 def test_rag_chat_valid_citations(monkeypatch) -> None:

@@ -7,7 +7,7 @@ name = "ai-adviser"
 version = "0.1.0"
 description = "RAG banking assistant with Azure AI Search, oss120b and LangGraph"
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.13"
 authors = [
   { name = "Ivan Romanteev", email = "vanya889605@gmail.com" },
 ]
@@ -73,3 +73,6 @@ target-version = ["py310"]
 
 [tool.isort]
 profile = "black"
+
+[tool.setuptools.package-data]
+"ai_adviser.adk.banking_orchestrator" = ["resources/*.json"]

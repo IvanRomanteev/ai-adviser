@@ -81,6 +81,50 @@ BANKING_RAG_SYSTEM_PROMPT = load_prompt("rag_system.md")
 # memory only.
 memory_store = MemoryStore(settings.SQLITE_DB_PATH)
 
+def structured_grounding_fallback(original_answer: str, sources: list[dict[str, Any]], limit: int = 5) -> str:
+    """Preserve the best available answer and add a grounding note + closest sources.
+
+    Used when CITATION_STRICT is enabled but we cannot produce valid inline citations.
+    """
+    note = (
+        "⚠️ Grounding note: I couldn't produce a response with valid inline citations "
+        "in the required [S#] format. The answer below may be partially unsupported "
+        "by the retrieved knowledge base.\n"
+    )
+
+    if not sources:
+        closest = "- (no sources available)\n"
+    else:
+        lines: list[str] = []
+        for i, src in enumerate(sources[: max(limit, 1)], start=1):
+            raw = (src or {}).get("raw") or {}
+            url = src.get("blob_url") or raw.get("blob_url") or ""
+            uid = raw.get("uid")
+            score = raw.get("score") or raw.get("@search.score") or src.get("score")
+
+            score_str = ""
+            try:
+                if score is not None:
+                    score_str = f" (score={float(score):.4f})"
+            except Exception:
+                score_str = ""
+
+            if url:
+                lines.append(f"- [S{i}] {url}{score_str}")
+            elif uid is not None:
+                lines.append(f"- [S{i}] uid={uid}{score_str}")
+            else:
+                lines.append(f"- [S{i}] (source unavailable){score_str}")
+
+        closest = "\n".join(lines) + "\n"
+
+    original_answer = (original_answer or "").strip()
+    return (
+        f"{original_answer}\n\n---\n\n{note}\n"
+        f"Closest sources:\n{closest}"
+    )
+
+
 
 app = FastAPI(
     title="ai-adviser",
@@ -286,7 +330,7 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                     max_score = score_val
 
             base_threshold = float(getattr(settings, "SCORE_THRESHOLD", 0.0) or 0.0)
-            guard_min_score = max(0.05, base_threshold * 1.1)
+            guard_min_score = max(0.01, base_threshold * 1.1)
 
             if max_score < guard_min_score and not is_relevant_to_sources(search_query, sources):
                 record_metric("fallback_irrelevant_hits", 1)
@@ -300,18 +344,17 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         # Build the prompt messages
         # ---------------------------
         messages: List[dict[str, str]] = []
-        if req.thread_id:
-            summary_for_prompt: Optional[str] = None
-            if settings.SUMMARY_ENABLED:
-                summary_for_prompt = memory_store.get_latest_summary(thread_id)
-            if summary_for_prompt:
-                messages.append({"role": "system", "content": f"PREVIOUS SUMMARY:\n{summary_for_prompt}"})
-            keep_k = max(settings.SUMMARY_KEEP_LAST_K, 0)
-            if history:
-                recent = history[-keep_k:] if keep_k > 0 else []
-                for m in recent:
-                    messages.append({"role": m["role"], "content": m["content"]})
+
+        # ---------------------------
+        # Message construction (stable order)
+        #   1) System prompt (core behavior)
+        #   2) System citation rules (if strict)
+        #   3) Optional previous summary
+        #   4) Recent history (user/assistant)
+        #   5) Current user prompt (context + sources mapping + question)
+        # ---------------------------
         messages.append({"role": "system", "content": BANKING_RAG_SYSTEM_PROMPT})
+
         if settings.CITATION_STRICT:
             messages.append(
                 {
@@ -328,6 +371,23 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                     ),
                 }
             )
+
+        if req.thread_id:
+            summary_for_prompt: Optional[str] = None
+            if settings.SUMMARY_ENABLED:
+                summary_for_prompt = memory_store.get_latest_summary(thread_id)
+            if summary_for_prompt:
+                messages.append({"role": "system", "content": f"PREVIOUS SUMMARY:\n{summary_for_prompt}"})
+
+            keep_k = max(settings.SUMMARY_KEEP_LAST_K, 0)
+            if history:
+                recent = history[-keep_k:] if keep_k > 0 else []
+                for m in recent:
+                    role = m.get("role")
+                    content = m.get("content")
+                    if role in {"user", "assistant"} and isinstance(content, str):
+                        messages.append({"role": role, "content": content})
+
         # Compose the user message with context, mapping and question
         src_map = sources_mapping
         messages.append(
@@ -391,7 +451,8 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                     answer = repaired
                 else:
                     record_metric("fallback_citation_fail", 1)
-                    answer = FALLBACK_MESSAGE
+                    answer = structured_grounding_fallback((repaired or "").strip() or answer, sources)
+
             # For strict mode proceed to insert sources and optionally check structure.
         # If answer is not fallback, ensure Sources and (optionally) strict structure.
         # Baseline validation is done above on the body-only answer so that
@@ -404,7 +465,8 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                 ok_structure = validate_answer_citations(answer, sources, enforce_structure=True)
                 if not ok_structure:
                     record_metric("fallback_citation_structure_fail", 1)
-                    answer = FALLBACK_MESSAGE
+                    answer = structured_grounding_fallback(answer, sources)
+
             else:
                 # Only ensure Sources mapping exists.
                 answer = upsert_sources_section(answer, sources, prefer_bold_heading=False)
