@@ -13,9 +13,9 @@ problem statement.
 from __future__ import annotations
 
 import logging
-import uuid
 import time
-from typing import Optional, List, Any
+import uuid
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -47,8 +47,6 @@ from ai_adviser.rag.citations import (
 from ai_adviser.rag.rewrite import rewrite_query
 from ai_adviser.rag.context import build_context_from_hits, default_token_length
 from ai_adviser.rag.guard import is_relevant_to_sources
-from ai_adviser.memory.summarizer import summarize_conversation, should_summarize
-
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +60,18 @@ class UTF8JSONResponse(JSONResponse):
 
     media_type = "application/json; charset=utf-8"
 
+
+
+app = FastAPI(
+    title="ai-adviser",
+    version="0.1.0",
+    default_response_class=UTF8JSONResponse,
+)
+
+# Подключаем роутер поиска ПОСЛЕ создания app
+from .search_endpoint import router as search_router  # noqa: E402
+
+app.include_router(search_router)
 
 # Determine the correct names for the language model and embedding functions.
 # The production code defines `chat` whereas the simplified test harness uses
@@ -81,7 +91,10 @@ BANKING_RAG_SYSTEM_PROMPT = load_prompt("rag_system.md")
 # memory only.
 memory_store = MemoryStore(settings.SQLITE_DB_PATH)
 
-def structured_grounding_fallback(original_answer: str, sources: list[dict[str, Any]], limit: int = 5) -> str:
+
+def structured_grounding_fallback(
+    original_answer: str, sources: list[dict[str, Any]], limit: int = 5
+) -> str:
     """Preserve the best available answer and add a grounding note + closest sources.
 
     Used when CITATION_STRICT is enabled but we cannot produce valid inline citations.
@@ -119,18 +132,8 @@ def structured_grounding_fallback(original_answer: str, sources: list[dict[str, 
         closest = "\n".join(lines) + "\n"
 
     original_answer = (original_answer or "").strip()
-    return (
-        f"{original_answer}\n\n---\n\n{note}\n"
-        f"Closest sources:\n{closest}"
-    )
+    return f"{original_answer}\n\n---\n\n{note}\nClosest sources:\n{closest}"
 
-
-
-app = FastAPI(
-    title="ai-adviser",
-    version="0.1.0",
-    default_response_class=UTF8JSONResponse,
-)
 
 # Set up metrics and tracing instrumentation.  These functions are
 # no-ops in the simplified implementation but remain for API parity.
@@ -151,7 +154,9 @@ def embed(req: EmbedRequest) -> EmbedResponse:
         vec = embed_text(req.text)
         return EmbedResponse(dims=len(vec), embedding=vec)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Embedding request failed: {type(e).__name__}") from e
+        raise HTTPException(
+            status_code=502, detail=f"Embedding request failed: {type(e).__name__}"
+        ) from e
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -166,7 +171,9 @@ def chat(req: ChatRequest) -> ChatResponse:
         )
         return ChatResponse(text=text)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Chat request failed: {type(e).__name__}") from e
+        raise HTTPException(
+            status_code=502, detail=f"Chat request failed: {type(e).__name__}"
+        ) from e
 
 
 @app.middleware("http")
@@ -186,7 +193,7 @@ async def observability_middleware(request: Request, call_next):
         try:
             path = request.url.path
             method = request.method
-            status_code = response.status_code if 'response' in locals() else 500
+            status_code = response.status_code if "response" in locals() else 500
             collector.observe_request(path, method, status_code, elapsed)
         except Exception:
             pass
@@ -228,15 +235,6 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         # ---------------------------
         # Query rewriting for follow-up questions
         # ---------------------------
-        # The retrieval and embedding queries are handled separately to
-        # accommodate conversation history when rewriting is disabled.
-        # By default we embed and search using the original question.  When
-        # conversation history exists and rewriting is disabled, we embed the
-        # concatenation of the last user message and the current question but
-        # still perform hybrid search using only the current question.  If
-        # rewriting is enabled and yields a non-empty new query, both the
-        # embedding and search use that rewritten query.
-        # --- build retrieval queries (text for search + text for embedding) ---
         embedding_query = question
         search_query = question
 
@@ -244,7 +242,6 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         if req.thread_id:
             history = memory_store.get_history(thread_id)
 
-            # если rewrite включён — он должен менять и embedding_query, и search_query
             new_query: str | None = None
             if settings.REWRITE_ENABLED:
                 summary: str | None = None
@@ -260,9 +257,12 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                 embedding_query = new_query
                 search_query = new_query
             else:
-                # rewrite выключен (или вернул пусто) — историю добавляем ТОЛЬКО в embedding
                 prev_user = next(
-                    (m.get("content") for m in reversed(history) if m.get("role") == "user" and m.get("content")),
+                    (
+                        m.get("content")
+                        for m in reversed(history)
+                        if m.get("role") == "user" and m.get("content")
+                    ),
                     None,
                 )
                 if prev_user:
@@ -275,12 +275,10 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         # Embedding + retrieval
         # ---------------------------
         with span("embed"):
-            # Embed the query that includes history when appropriate.
             query_vec = embed_text(embedding_query)
         record_metric("embed_calls", 1)
 
         with span("retrieve"):
-            # Perform hybrid search on the search query (usually the current question).
             hits = hybrid_search(search_query, query_vec, top_k=req.top_k)
         record_metric("search_calls", 1)
 
@@ -292,9 +290,6 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                 token_fn=default_token_length if settings.MAX_CONTEXT_TOKENS else None,
                 score_threshold=settings.SCORE_THRESHOLD,
             )
-            # Pre-build a deterministic mapping of citations to blob URLs.  This
-            # mapping will later be passed to the LLM and used to generate
-            # the final Sources section.
             _, sources_mapping = build_sources_mapping(sources)
 
         # Strict fallback when no relevant chunks were retrieved
@@ -306,22 +301,17 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                 memory_store.append(thread_id, user_id, "assistant", answer)
             return RagChatResponse(answer=answer, chunks=[])
 
-        # KB-only guard:
-        # Even if retrieval returned chunks, we must ensure they are actually relevant.
-        #
-        # NOTE:
-        # is_relevant_to_sources() is a cheap lexical heuristic (keyword overlap).
-        # It can produce false negatives on follow-up questions
-        # (e.g. "spend" vs earlier chunk about "credit utilization").
-        #
-        # To avoid breaking multi-turn RAG, we apply this guard
-        # only when retrieval confidence is clearly low.
-
+        # KB-only guard (strict mode)
         if settings.CITATION_STRICT:
             max_score = 0.0
             for src in sources:
                 raw = (src or {}).get("raw") or {}
-                score = raw.get("score") or raw.get("@search.score") or src.get("score") or 0.0
+                score = (
+                    raw.get("score")
+                    or raw.get("@search.score")
+                    or src.get("score")
+                    or 0.0
+                )
                 try:
                     score_val = float(score)
                 except Exception:
@@ -332,7 +322,9 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
             base_threshold = float(getattr(settings, "SCORE_THRESHOLD", 0.0) or 0.0)
             guard_min_score = max(0.01, base_threshold * 1.1)
 
-            if max_score < guard_min_score and not is_relevant_to_sources(search_query, sources):
+            if max_score < guard_min_score and not is_relevant_to_sources(
+                search_query, sources
+            ):
                 record_metric("fallback_irrelevant_hits", 1)
                 answer = FALLBACK_MESSAGE
                 if req.thread_id:
@@ -345,14 +337,6 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         # ---------------------------
         messages: List[dict[str, str]] = []
 
-        # ---------------------------
-        # Message construction (stable order)
-        #   1) System prompt (core behavior)
-        #   2) System citation rules (if strict)
-        #   3) Optional previous summary
-        #   4) Recent history (user/assistant)
-        #   5) Current user prompt (context + sources mapping + question)
-        # ---------------------------
         messages.append({"role": "system", "content": BANKING_RAG_SYSTEM_PROMPT})
 
         if settings.CITATION_STRICT:
@@ -377,7 +361,9 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
             if settings.SUMMARY_ENABLED:
                 summary_for_prompt = memory_store.get_latest_summary(thread_id)
             if summary_for_prompt:
-                messages.append({"role": "system", "content": f"PREVIOUS SUMMARY:\n{summary_for_prompt}"})
+                messages.append(
+                    {"role": "system", "content": f"PREVIOUS SUMMARY:\n{summary_for_prompt}"}
+                )
 
             keep_k = max(settings.SUMMARY_KEEP_LAST_K, 0)
             if history:
@@ -388,7 +374,6 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                     if role in {"user", "assistant"} and isinstance(content, str):
                         messages.append({"role": role, "content": content})
 
-        # Compose the user message with context, mapping and question
         src_map = sources_mapping
         messages.append(
             {
@@ -412,13 +397,10 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
         # Citation validation, repair and structure enforcement
         # ---------------------------
         if settings.CITATION_STRICT:
-            # Run baseline citation checks without enforcing structural rules.
             with span("validate_citations"):
                 ok_base = validate_answer_citations(answer, sources, enforce_structure=False)
             if not ok_base:
-                # Attempt exactly one repair pass when baseline fails.
                 with span("repair_citations"):
-                    src_map = sources_mapping
                     repair_prompt: List[dict[str, str]] = [
                         {
                             "role": "system",
@@ -444,7 +426,7 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                         },
                     ]
                     repaired = llm_chat(repair_prompt, max_tokens=900, temperature=0.0)
-                # Validate baseline again for the repaired answer.
+
                 with span("validate_citations_repair"):
                     ok2 = validate_answer_citations(repaired, sources, enforce_structure=False)
                 if ok2:
@@ -453,33 +435,21 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                     record_metric("fallback_citation_fail", 1)
                     answer = structured_grounding_fallback((repaired or "").strip() or answer, sources)
 
-            # For strict mode proceed to insert sources and optionally check structure.
-        # If answer is not fallback, ensure Sources and (optionally) strict structure.
-        # Baseline validation is done above on the body-only answer so that
-        # citations in the Sources section don't satisfy baseline.
         if answer != FALLBACK_MESSAGE:
             if settings.CITATION_STRICT and settings.CITATION_ENFORCE_STRUCTURE:
-                # Deterministic fix: ensure every non-empty body line has an inline
-                # citation and rebuild Sources mapping with correct blob URLs.
                 answer = enforce_citation_structure(answer, sources, prefer_bold_heading=False)
                 ok_structure = validate_answer_citations(answer, sources, enforce_structure=True)
                 if not ok_structure:
                     record_metric("fallback_citation_structure_fail", 1)
                     answer = structured_grounding_fallback(answer, sources)
-
             else:
-                # Only ensure Sources mapping exists.
                 answer = upsert_sources_section(answer, sources, prefer_bold_heading=False)
 
-# Persist conversation to memory if a thread ID was provided
+        # Persist conversation to memory if a thread ID was provided
         if req.thread_id:
             memory_store.append(thread_id, user_id, "user", question)
             memory_store.append(thread_id, user_id, "assistant", answer)
-            # Summarisation is disabled in the simplified summariser.  If
-            # enabled, we would check should_summarize(total_msgs) and
-            # potentially save a summary using summarize_conversation().
 
-        # Build the list of chunks to return when the answer is grounded
         chunks: List[RagChunk] = []
         if answer != FALLBACK_MESSAGE:
             for src in sources:
@@ -501,44 +471,50 @@ def rag_chat(req: RagChatRequest) -> RagChatResponse:
                 )
 
         return RagChatResponse(answer=answer, chunks=chunks)
+
     except HTTPException:
         raise
     except Exception as e:
-        # Catch-all for unexpected errors to return a 502 response
         raise HTTPException(status_code=502, detail=f"RAG chat failed: {type(e).__name__}") from e
 
 
 @app.get("/ready")
-def ready() -> dict[str, Any]:  # type: ignore[valid-type]
-    """Readiness probe that attempts to call the embed and search stubs.
-
-    The production code checks connectivity to Azure services.  Here
-    we simply attempt to call the stubbed embed and search functions
-    and report whether they raise exceptions.  In tests these
-    functions are monkeypatched to deterministic behaviour.
-    """
+def ready() -> dict[str, Any]:
     checks = {
         "embed": {"ok": False, "error": None},
         "search": {"ok": False, "error": None},
     }
+
+    query_vec = None
+
     # EMBED check
     try:
-        embed_text("ping")
-        checks["embed"]["ok"] = True
-    except RuntimeError:
-        # If the stub raises RuntimeError we still treat it as OK in dev
+        query_vec = embed_text("ping")  # вернёт вектор нужной размерности
         checks["embed"]["ok"] = True
     except Exception as e:
         checks["embed"]["error"] = type(e).__name__
+
     # SEARCH check
     try:
-        hybrid_search("ping", [0.0], top_k=1)
-        checks["search"]["ok"] = True
-    except RuntimeError:
+        if query_vec is None:
+            raise RuntimeError("Embedding failed; cannot validate search.")
+        hybrid_search("ping", query_vec, top_k=1)
         checks["search"]["ok"] = True
     except Exception as e:
         checks["search"]["error"] = type(e).__name__
+
     all_ok = checks["embed"]["ok"] and checks["search"]["ok"]
     if not all_ok:
         raise HTTPException(status_code=503, detail={"ready": False, "checks": checks})
+
     return {"ready": True, "checks": checks}
+
+
+
+@app.get("/checks/liveness")
+def liveness() -> dict[str, bool]:
+    return health()
+
+@app.get("/checks/readiness")
+def readiness() -> dict[str, Any]:
+    return ready()
