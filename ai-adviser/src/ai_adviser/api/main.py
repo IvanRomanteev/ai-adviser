@@ -509,7 +509,9 @@ def ready() -> dict[str, Any]:
 
     return {"ready": True, "checks": checks}
 
-
+@app.get("/checks/readiness")
+def checks_readiness():
+    return ready()
 
 @app.get("/checks/liveness")
 def liveness() -> dict[str, bool]:
