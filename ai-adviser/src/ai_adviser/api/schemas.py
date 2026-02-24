@@ -9,6 +9,14 @@ from pydantic import BaseModel, Field
 Role = Literal["system", "user", "assistant"]
 
 
+class SearchRequest(BaseModel):
+    query: str
+
+
+class SearchResponse(BaseModel):
+    sources: str
+
+
 class ChatMessage(BaseModel):
     role: Role
     content: str

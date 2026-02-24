@@ -1,13 +1,13 @@
-from ai_adviser.api.main import app, health, ready
+#from ai_adviser.api.main import app, health, ready
 
 
-@app.get("/checks/liveness")
-def liveness() -> dict[str, bool]:
+#@app.get("/checks/liveness")
+#def liveness() -> dict[str, bool]:
 
-    return health()  # type: ignore[no-any-return]
+    #return health()  # type: ignore[no-any-return]
 
 
-@app.get("/checks/readiness")
-def readiness() -> dict[str, object]:
+#@app.get("/checks/readiness")
+#def readiness() -> dict[str, object]:
 
-    return ready()  # type: ignore[no-any-return]
+    #return ready()  # type: ignore[no-any-return]

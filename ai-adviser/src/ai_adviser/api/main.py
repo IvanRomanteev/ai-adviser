@@ -1,14 +1,3 @@
-"""FastAPI application implementing a simplified RAG pipeline.
-
-This module defines a small FastAPI app with an endpoint ``/rag_chat``
-that performs retrieval augmented generation.  The implementation is
-adapted from the production ai_adviser project but stripped down for
-testing.  In particular, we avoid external network calls and rely on
-monkeypatching to simulate embedding, search and language model
-behaviour.  Citation handling is implemented in a strict and
-deterministic manner according to the requirements described in the
-problem statement.
-"""
 
 from __future__ import annotations
 
@@ -509,14 +498,11 @@ def ready() -> dict[str, Any]:
 
     return {"ready": True, "checks": checks}
 
-@app.get("/checks/readiness")
-def checks_readiness():
-    return ready()
-
 @app.get("/checks/liveness")
-def liveness() -> dict[str, bool]:
+def checks_liveness() -> dict[str, bool]:
     return health()
 
 @app.get("/checks/readiness")
-def readiness() -> dict[str, Any]:
+def checks_readiness() -> dict[str, Any]:
     return ready()
+
