@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent -> LiteLLM gateway response",
+  "type": "object",
+  "required": ["id", "status", "output_format", "output", "metrics"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Echoed request id"
+    },
+    "user_id": {
+      "type": ["string", "null"],
+      "description": "Optional user id"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "tool_call", "error", "rate_limited"]
+    },
+    "output_format": {
+      "type": "string",
+      "description": "Scenario-dependent output format"
+    },
+    "output": {
+      "description": "Scenario-dependent output payload"
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["input_tokens", "cached_tokens", "output_tokens", "total_tokens"],
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "cached_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "total_tokens": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,16 @@
+{
+  "id": "req_001",
+  "user_id": "user_134",
+  "status": "success",
+  "output_format": "chat",
+  "output": {
+    "text": "ok: Hello!",
+    "scenario": "chat"
+  },
+  "metrics": {
+    "input_tokens": 2,
+    "cached_tokens": 0,
+    "output_tokens": 3,
+    "total_tokens": 5
+  }
+}

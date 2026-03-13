@@ -1,0 +1,11 @@
+{
+  "id": "req_001",
+  "user_input": "Hello!",
+  "tools": ["tool-a", "tool-b"],
+  "history": [],
+  "verbosity": "normal",
+  "scenario": "chat",
+  "scenario_args": {
+    "user_id": "user_134"
+  }
+}

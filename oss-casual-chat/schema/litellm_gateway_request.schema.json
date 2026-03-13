@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LiteLLM gateway -> agent request",
+  "type": "object",
+  "required": ["id", "user_input"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Request id for tracing/logs"
+    },
+    "user_input": {
+      "type": "string",
+      "description": "User query"
+    },
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "history": {
+      "type": "array",
+      "items": {},
+      "default": []
+    },
+    "verbosity": {
+      "type": "string",
+      "enum": ["brief", "normal", "verbose"],
+      "default": "normal"
+    },
+    "scenario": {
+      "type": "string",
+      "default": "chat"
+    },
+    "scenario_args": {
+      "type": "object",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "additionalProperties": true
+}
