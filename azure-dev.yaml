@@ -1,0 +1,68 @@
+trigger: none
+
+pool:
+  name: 'Percapita'
+  demands:
+    - agent.name -equals ubuntu-build-agent
+
+variables:
+  - name: docker_aiservice_repo
+    value: "osschat"
+  - name: srcsubpath
+    value: oss-casual-chat
+  - name: repo_dockerhub
+    value:
+  - name: registry
+    value: "PercapitaDockerImages"
+  - name: GITID
+    value: $(Build.SourceVersion)
+  - name: is_release
+    value: false
+  - name: dockertag
+    value: $[ format('dev-{0}', variables['Build.SourceVersion']) ]
+  - name: dockertags
+    value: $[ format('latest,{0}', variables['dockertag']) ]
+
+steps:
+  - bash: |
+      set -eux
+      pwd
+      echo "Build.SourceVersion=$(Build.SourceVersion)"
+      echo "tag=$(dockertag)"
+      echo "tags=$(dockertags)"
+      echo "$(dockertag)" > version.tmp
+    displayName: "Version"
+    workingDirectory: "$(System.DefaultWorkingDirectory)/$(srcsubpath)"
+
+  - task: Docker@2
+    displayName: "Login to registry: $(registry)"
+    inputs:
+      command: login
+      containerRegistry: $(registry)
+
+  - task: Docker@2
+    displayName: "docker build"
+    inputs:
+      repository: $(docker_aiservice_repo)
+      command: build
+      buildContext: "$(System.DefaultWorkingDirectory)/$(srcsubpath)"
+      Dockerfile: "$(System.DefaultWorkingDirectory)/$(srcsubpath)/Dockerfile"
+      tags: |
+        $(dockertags)
+
+  - task: Docker@2
+    displayName: "docker push"
+    inputs:
+      repository: $(docker_aiservice_repo)
+      command: push
+      buildContext: "$(System.DefaultWorkingDirectory)/$(srcsubpath)"
+      Dockerfile: "$(System.DefaultWorkingDirectory)/$(srcsubpath)/Dockerfile"
+      tags: |
+        $(dockertags)
+
+  - task: PublishBuildArtifacts@1
+    displayName: "Save version.tmp"
+    inputs:
+      PathtoPublish: $(srcsubpath)/version.tmp
+      ArtifactName: "drop"
+      publishLocation: "Container"
