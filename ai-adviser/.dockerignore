@@ -1,8 +1,0 @@
-.venv/
-adk_env/
-__pycache__/
-*.pyc
-.env
-.memory/
-.test_memory/
-.git/
