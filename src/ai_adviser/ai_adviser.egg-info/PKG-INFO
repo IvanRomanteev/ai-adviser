@@ -1,0 +1,45 @@
+Metadata-Version: 2.4
+Name: ai-adviser
+Version: 0.1.0
+Summary: RAG banking assistant with Azure AI Search, oss120b and LangGraph
+Author-email: Ivan Romanteev <vanya889605@gmail.com>
+Requires-Python: <3.14,>=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: python-dotenv<2.0,>=1.0
+Requires-Dist: openai==1.109.1
+Requires-Dist: azure-search-documents==11.6.0
+Requires-Dist: azure-storage-blob<13.0.0,>=12.16.0
+Requires-Dist: langgraph<0.3.0,>=0.2.0
+Requires-Dist: fastapi<1.0.0,>=0.100.0
+Requires-Dist: uvicorn<0.30.0,>=0.23.0
+Requires-Dist: sqlalchemy<3.0.0,>=2.0.0
+Requires-Dist: psycopg2-binary<3.0.0,>=2.9.6
+Requires-Dist: pydantic<2.0.0,>=1.10.10
+Requires-Dist: tenacity<9.0.0,>=8.2.2
+Requires-Dist: orjson<4.0.0,>=3.9.8
+Requires-Dist: pytest<9.0.0,>=7.4.3
+Requires-Dist: httpx==0.26.0
+Requires-Dist: httpcore==1.0.7
+Requires-Dist: h11==0.14.0
+Requires-Dist: jiter==0.9.1
+
+# Introduction 
+TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+
+# Getting Started
+TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
+1.	Installation process
+2.	Software dependencies
+3.	Latest releases
+4.	API references
+
+# Build and Test
+TODO: Describe and show how to build your code and run the tests. 
+
+# Contribute
+TODO: Explain how other users and developers can contribute to make your code better. 
+
+If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
+- [ASP.NET Core](https://github.com/aspnet/Home)
+- [Visual Studio Code](https://github.com/Microsoft/vscode)
+- [Chakra Core](https://github.com/Microsoft/ChakraCore)

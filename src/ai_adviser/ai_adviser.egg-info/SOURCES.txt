@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/ai_adviser/__init__.py
+src/ai_adviser.egg-info/PKG-INFO
+src/ai_adviser.egg-info/SOURCES.txt
+src/ai_adviser.egg-info/dependency_links.txt
+src/ai_adviser.egg-info/requires.txt
+src/ai_adviser.egg-info/top_level.txt
